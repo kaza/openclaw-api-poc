@@ -331,7 +331,12 @@
       setStatus('connected', 'OK');
     } catch (err) {
       setStatus('error', err.message);
-      addMessage('system', `❌ Error: ${err.message}`);
+      let detail = err.message;
+      if (err.name === 'TypeError' && detail === 'Failed to fetch') {
+        const base = url || window.location.origin;
+        detail = `Network error — cannot reach ${base}/v1/responses\n\nPossible causes:\n• Proxy server not running (node server.js)\n• Gateway not running on ${url || 'localhost:18789'}\n• CORS blocked (if using direct gateway URL instead of proxy)`;
+      }
+      addMessage('system', `❌ ${detail}`);
     } finally {
       sendBtn.disabled = false;
       messageInput.focus();
@@ -340,7 +345,8 @@
 
   async function sendNonStreaming(url, token, body) {
     const base = url || '';
-    const res = await fetch(`${base}/v1/responses`, {
+    const endpoint = `${base}/v1/responses`;
+    const res = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -351,7 +357,11 @@
 
     if (!res.ok) {
       const err = await res.text();
-      throw new Error(`${res.status}: ${err}`);
+      const hint = res.status === 401 ? ' (check your token)' 
+                 : res.status === 405 ? ' (responses endpoint not enabled in gateway config)'
+                 : res.status === 502 ? ' (gateway proxy error — is the gateway running?)'
+                 : '';
+      throw new Error(`HTTP ${res.status}${hint}: ${err}`);
     }
 
     const data = await res.json();
@@ -363,7 +373,8 @@
 
   async function sendStreaming(url, token, body) {
     const base = url || '';
-    const res = await fetch(`${base}/v1/responses`, {
+    const endpoint = `${base}/v1/responses`;
+    const res = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -374,7 +385,11 @@
 
     if (!res.ok) {
       const err = await res.text();
-      throw new Error(`${res.status}: ${err}`);
+      const hint = res.status === 401 ? ' (check your token)' 
+                 : res.status === 405 ? ' (responses endpoint not enabled in gateway config)'
+                 : res.status === 502 ? ' (gateway proxy error — is the gateway running?)'
+                 : '';
+      throw new Error(`HTTP ${res.status}${hint}: ${err}`);
     }
 
     const msgDiv = addMessage('assistant', '');
