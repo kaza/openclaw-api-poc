@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenClaw API POC</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0a0a0a;
+      color: #e0e0e0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      background: #141414;
+      border-bottom: 1px solid #2a2a2a;
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    header h1 {
+      font-size: 16px;
+      font-weight: 600;
+      color: #fff;
+      white-space: nowrap;
+    }
+
+    .config-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      flex: 1;
+    }
+
+    .config-row label {
+      font-size: 11px;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .config-row input, .config-row select {
+      background: #1e1e1e;
+      border: 1px solid #333;
+      color: #e0e0e0;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+    }
+
+    .config-row input:focus, .config-row select:focus {
+      border-color: #4a9eff;
+    }
+
+    #gatewayUrl { width: 220px; }
+    #gatewayToken { width: 180px; }
+    #agentId { width: 120px; }
+    #userId { width: 140px; }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #555;
+      margin-left: auto;
+    }
+
+    .status-dot.connected { background: #4caf50; }
+    .status-dot.error { background: #f44336; }
+
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .msg {
+      max-width: 75%;
+      padding: 10px 14px;
+      border-radius: 12px;
+      font-size: 14px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+
+    .msg.user {
+      align-self: flex-end;
+      background: #1a3a5c;
+      color: #c8e0ff;
+      border-bottom-right-radius: 4px;
+    }
+
+    .msg.assistant {
+      align-self: flex-start;
+      background: #1e1e1e;
+      color: #e0e0e0;
+      border-bottom-left-radius: 4px;
+    }
+
+    .msg.system {
+      align-self: center;
+      background: transparent;
+      color: #666;
+      font-size: 12px;
+      font-style: italic;
+    }
+
+    .msg .meta {
+      font-size: 11px;
+      color: #666;
+      margin-bottom: 4px;
+    }
+
+    .msg.assistant .meta { color: #888; }
+
+    #input-area {
+      background: #141414;
+      border-top: 1px solid #2a2a2a;
+      padding: 12px 20px;
+      display: flex;
+      gap: 8px;
+    }
+
+    #messageInput {
+      flex: 1;
+      background: #1e1e1e;
+      border: 1px solid #333;
+      color: #e0e0e0;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+      resize: none;
+    }
+
+    #messageInput:focus { border-color: #4a9eff; }
+
+    #sendBtn {
+      background: #4a9eff;
+      color: #fff;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    #sendBtn:hover { background: #3a8eef; }
+    #sendBtn:disabled { background: #333; color: #666; cursor: not-allowed; }
+
+    .streaming-cursor::after {
+      content: '▊';
+      animation: blink 0.8s infinite;
+      color: #4a9eff;
+    }
+
+    @keyframes blink {
+      0%, 50% { opacity: 1; }
+      51%, 100% { opacity: 0; }
+    }
+
+    #streamToggle {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 12px;
+      color: #888;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    #streamToggle input { accent-color: #4a9eff; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>🔌 OpenClaw POC</h1>
+  <div class="config-row">
+    <div>
+      <label>Gateway</label>
+      <input id="gatewayUrl" value="http://localhost:18789" placeholder="http://localhost:18789">
+    </div>
+    <div>
+      <label>Token</label>
+      <input id="gatewayToken" type="password" placeholder="OPENCLAW_GATEWAY_TOKEN">
+    </div>
+    <div>
+      <label>Agent</label>
+      <input id="agentId" value="main" placeholder="main">
+    </div>
+    <div>
+      <label>User ID (session)</label>
+      <input id="userId" value="Almir" placeholder="user id">
+    </div>
+    <label id="streamToggle">
+      <input type="checkbox" id="streamEnabled" checked> Stream
+    </label>
+    <div class="status-dot" id="statusDot" title="Not tested"></div>
+  </div>
+</header>
+
+<div id="messages">
+  <div class="msg system">Configure your gateway URL and token above, then send a message.</div>
+</div>
+
+<div id="input-area">
+  <textarea id="messageInput" rows="1" placeholder="Type a message..." autofocus></textarea>
+  <button id="sendBtn">Send</button>
+</div>
+
+<script>
+  const $ = (s) => document.querySelector(s);
+  const messagesEl = $('#messages');
+  const messageInput = $('#messageInput');
+  const sendBtn = $('#sendBtn');
+  const statusDot = $('#statusDot');
+
+  // Auto-resize textarea
+  messageInput.addEventListener('input', () => {
+    messageInput.style.height = 'auto';
+    messageInput.style.height = Math.min(messageInput.scrollHeight, 120) + 'px';
+  });
+
+  // Enter to send (Shift+Enter for newline)
+  messageInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
+  });
+
+  sendBtn.addEventListener('click', send);
+
+  // Persist config to localStorage
+  ['gatewayUrl', 'gatewayToken', 'agentId', 'userId', 'streamEnabled'].forEach(id => {
+    const el = $(`#${id}`);
+    const saved = localStorage.getItem(`oc_${id}`);
+    if (saved !== null) {
+      if (el.type === 'checkbox') el.checked = saved === 'true';
+      else el.value = saved;
+    }
+    el.addEventListener('change', () => {
+      localStorage.setItem(`oc_${id}`, el.type === 'checkbox' ? el.checked : el.value);
+    });
+    el.addEventListener('input', () => {
+      if (el.type !== 'checkbox') localStorage.setItem(`oc_${id}`, el.value);
+    });
+  });
+
+  function addMessage(role, text, userId) {
+    const div = document.createElement('div');
+    div.className = `msg ${role}`;
+    
+    if (role !== 'system') {
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = role === 'user' ? `${userId || 'You'}` : `Assistant`;
+      div.appendChild(meta);
+    }
+
+    const content = document.createElement('span');
+    content.className = 'content';
+    content.textContent = text;
+    div.appendChild(content);
+
+    messagesEl.appendChild(div);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return div;
+  }
+
+  function setStatus(state, title) {
+    statusDot.className = `status-dot ${state}`;
+    statusDot.title = title || state;
+  }
+
+  async function send() {
+    const text = messageInput.value.trim();
+    if (!text) return;
+
+    const url = $('#gatewayUrl').value.trim();
+    const token = $('#gatewayToken').value.trim();
+    const agentId = $('#agentId').value.trim() || 'main';
+    const userId = $('#userId').value.trim() || 'default';
+    const stream = $('#streamEnabled').checked;
+
+    if (!url || !token) {
+      addMessage('system', '⚠️ Set gateway URL and token first.');
+      return;
+    }
+
+    messageInput.value = '';
+    messageInput.style.height = 'auto';
+    sendBtn.disabled = true;
+
+    addMessage('user', text, userId);
+
+    const body = {
+      model: `openclaw:${agentId}`,
+      input: text,
+      user: userId,
+      stream
+    };
+
+    try {
+      setStatus('', 'Sending...');
+
+      if (stream) {
+        await sendStreaming(url, token, body);
+      } else {
+        await sendNonStreaming(url, token, body);
+      }
+
+      setStatus('connected', 'OK');
+    } catch (err) {
+      setStatus('error', err.message);
+      addMessage('system', `❌ Error: ${err.message}`);
+    } finally {
+      sendBtn.disabled = false;
+      messageInput.focus();
+    }
+  }
+
+  async function sendNonStreaming(url, token, body) {
+    const res = await fetch(`${url}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`${res.status}: ${err}`);
+    }
+
+    const data = await res.json();
+    
+    // Extract text from output items
+    const text = extractResponseText(data);
+    addMessage('assistant', text || '(empty response)');
+  }
+
+  async function sendStreaming(url, token, body) {
+    const res = await fetch(`${url}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`${res.status}: ${err}`);
+    }
+
+    const msgDiv = addMessage('assistant', '');
+    const contentEl = msgDiv.querySelector('.content');
+    contentEl.classList.add('streaming-cursor');
+    let fullText = '';
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // keep incomplete line
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          if (data === '[DONE]') continue;
+
+          try {
+            const event = JSON.parse(data);
+            
+            if (event.type === 'response.output_text.delta' && event.delta) {
+              fullText += event.delta;
+              contentEl.textContent = fullText;
+              messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+          } catch (e) {
+            // skip unparseable lines
+          }
+        }
+      }
+    }
+
+    contentEl.classList.remove('streaming-cursor');
+    if (!fullText) contentEl.textContent = '(empty response)';
+  }
+
+  function extractResponseText(data) {
+    if (!data.output) return data.text || '';
+    
+    return data.output
+      .filter(item => item.type === 'message' && item.role === 'assistant')
+      .flatMap(item => item.content || [])
+      .filter(part => part.type === 'output_text')
+      .map(part => part.text)
+      .join('\n') || data.text || '';
+  }
+</script>
+
+</body>
+</html>
