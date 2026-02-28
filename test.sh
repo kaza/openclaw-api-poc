@@ -175,6 +175,22 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# --- Test 9: Session key mapping ---
+echo ""
+echo "📋 Test 9: Session key inspection"
+echo ""
+echo "  Session key pattern: agent:<agentId>:openresponses-user:<userId>"
+echo "  ┌──────────────────────────────────────────────────────────────"
+echo "  │ User ID '${USER_A}'"
+echo "  │   → Session key: agent:${AGENT}:openresponses-user:$(echo "${USER_A}" | tr '[:upper:]' '[:lower:]')"
+echo "  │"
+echo "  │ User ID '${USER_B}'"
+echo "  │   → Session key: agent:${AGENT}:openresponses-user:$(echo "${USER_B}" | tr '[:upper:]' '[:lower:]')"
+echo "  └──────────────────────────────────────────────────────────────"
+echo ""
+echo "  💡 You can also override session routing with the header:"
+echo "     x-openclaw-session-key: <sessionKey>"
+
 # --- Summary ---
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
