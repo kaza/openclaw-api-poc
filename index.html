@@ -196,7 +196,7 @@
   <div class="config-row">
     <div>
       <label>Gateway</label>
-      <input id="gatewayUrl" value="http://localhost:18789" placeholder="http://localhost:18789">
+      <input id="gatewayUrl" value="" placeholder="(same origin proxy)">
     </div>
     <div>
       <label>Token</label>
@@ -295,14 +295,14 @@
     const text = messageInput.value.trim();
     if (!text) return;
 
-    const url = $('#gatewayUrl').value.trim();
+    const url = $('#gatewayUrl').value.trim(); // empty = same origin (proxy mode)
     const token = $('#gatewayToken').value.trim();
     const agentId = $('#agentId').value.trim() || 'main';
     const userId = $('#userId').value.trim() || 'default';
     const stream = $('#streamEnabled').checked;
 
-    if (!url || !token) {
-      addMessage('system', '⚠️ Set gateway URL and token first.');
+    if (!token) {
+      addMessage('system', '⚠️ Set gateway token first.');
       return;
     }
 
@@ -339,7 +339,8 @@
   }
 
   async function sendNonStreaming(url, token, body) {
-    const res = await fetch(`${url}/v1/responses`, {
+    const base = url || '';
+    const res = await fetch(`${base}/v1/responses`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -361,7 +362,8 @@
   }
 
   async function sendStreaming(url, token, body) {
-    const res = await fetch(`${url}/v1/responses`, {
+    const base = url || '';
+    const res = await fetch(`${base}/v1/responses`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,
