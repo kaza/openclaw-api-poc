@@ -1,5 +1,6 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { DEFAULT_ALLOWED_BASH_COMMANDS } from "./security/defaults.js";
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
@@ -9,6 +10,9 @@ export interface HarnessConfig {
     model: string;
     apiKey?: string;
     thinkingLevel?: ThinkingLevel;
+  };
+  security?: {
+    allowedCommands?: string[];
   };
   embedding: {
     provider: "openai";
@@ -72,6 +76,9 @@ export async function loadConfig(configPath = path.resolve(process.cwd(), "confi
   config.memory ??= {};
   config.memory.watch ??= true;
   config.memory.watchIntervalMs ??= 10_000;
+
+  config.security ??= {};
+  config.security.allowedCommands ??= [...DEFAULT_ALLOWED_BASH_COMMANDS];
 
   config.server.port ??= 3000;
   config.embedding.dimensions ??= 1536;

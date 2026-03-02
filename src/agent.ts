@@ -4,7 +4,6 @@ import { getModel, type AssistantMessage, type TextContent } from "@mariozechner
 import {
   AuthStorage,
   createAgentSession,
-  createCodingTools,
   createExtensionRuntime,
   ModelRegistry,
   SessionManager,
@@ -25,6 +24,7 @@ import { createTtsTool } from "./tools/tts.js";
 import { CronStore } from "./cron/store.js";
 import { CronScheduler } from "./cron/scheduler.js";
 import { createCronTools } from "./tools/cron.js";
+import { createSandboxedTools } from "./tools/sandbox.js";
 import { buildUserPaths } from "./user-paths.js";
 
 interface UserSessionContext {
@@ -272,7 +272,11 @@ export class AgentHarness {
         sessionManager,
         modelRegistry: this.modelRegistry,
         authStorage: this.authStorage,
-        tools: createCodingTools(this.config.workspace),
+        tools: createSandboxedTools({
+          userDir: paths.rootDir,
+          workspaceDir: this.config.workspace,
+          allowedCommands: this.config.security?.allowedCommands,
+        }),
         customTools,
         resourceLoader: createStaticResourceLoader(this.systemPrompt),
       });

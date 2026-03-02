@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockState = vi.hoisted(() => ({
@@ -102,7 +105,9 @@ vi.mock("@mariozechner/pi-ai", () => ({
   getModel: mockState.getModel,
 }));
 
-vi.mock("@mariozechner/pi-coding-agent", () => {
+vi.mock("@mariozechner/pi-coding-agent", async () => {
+  const actual = await vi.importActual<Record<string, unknown>>("@mariozechner/pi-coding-agent");
+
   class AuthStorage {
     static create() {
       return {
@@ -116,13 +121,13 @@ vi.mock("@mariozechner/pi-coding-agent", () => {
   }
 
   return {
+    ...actual,
     AuthStorage,
     ModelRegistry,
     SessionManager: {
       continueRecent: mockState.continueRecent,
     },
     createExtensionRuntime: vi.fn(() => ({ runtime: true })),
-    createCodingTools: vi.fn(() => [{ name: "coding" }]),
     createAgentSession: mockState.createAgentSession,
   };
 });
@@ -311,6 +316,42 @@ describe("AgentHarness", () => {
       const session = (await call.value).session;
       expect(session.dispose).toHaveBeenCalled();
     }
+  });
+
+  it("prevents user A from reading user B files through agent session tools", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-security-"));
+    const sessionsDir = path.join(root, "sessions");
+    const workspaceDir = path.join(root, "workspace");
+
+    const harness = new AgentHarness(
+      makeConfig({
+        sessions: sessionsDir,
+        workspace: workspaceDir,
+        security: { allowedCommands: ["ls", "cat", "grep"] },
+      }) as never,
+    );
+
+    await harness.init();
+    await harness.prompt("user-a", "hello");
+    await harness.prompt("user-b", "hello");
+
+    const userBSecretPath = path.join(sessionsDir, "user-b", "secret.txt");
+    await writeFile(userBSecretPath, "top-secret", "utf8");
+
+    const firstSessionTools = mockState.createAgentSession.mock.calls[0][0].tools as Array<{
+      name: string;
+      execute: (...args: unknown[]) => Promise<unknown>;
+    }>;
+
+    const userAReadTool = firstSessionTools.find((tool) => tool.name === "read");
+    expect(userAReadTool).toBeTruthy();
+
+    await expect(userAReadTool!.execute("id", { path: userBSecretPath }, undefined)).rejects.toThrow(
+      /Blocked path outside allowed directories/,
+    );
+
+    await harness.shutdown();
+    await rm(root, { recursive: true, force: true });
   });
 
   it("throws on unknown model lookup", async () => {

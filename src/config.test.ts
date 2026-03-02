@@ -62,6 +62,19 @@ describe("loadConfig", () => {
     expect(config.memory?.watchIntervalMs).toBe(10_000);
     expect(config.embedding.dimensions).toBe(1536);
     expect(config.tts.outputDir).toBe(path.join(root, "sessions", "audio"));
+    expect(config.security?.allowedCommands).toEqual([
+      "ls",
+      "cat",
+      "head",
+      "tail",
+      "wc",
+      "sort",
+      "uniq",
+      "grep",
+      "find",
+      "echo",
+      "date",
+    ]);
 
     await expect(stat(config.workspace)).resolves.toBeTruthy();
     await expect(stat(config.sessions)).resolves.toBeTruthy();

@@ -25,6 +25,9 @@
     "port": 3000,
     "token": "${AGENT_API_TOKEN}"
   },
+  "security": {
+    "allowedCommands": ["ls", "cat", "head", "tail", "wc", "sort", "uniq", "grep", "find", "echo", "date"]
+  },
   "workspace": "./workspace",
   "sessions": "./sessions"
 }
