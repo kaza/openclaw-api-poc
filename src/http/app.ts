@@ -18,6 +18,7 @@ export interface ChatHarness {
 
 export interface HttpAppConfig {
   sessions: string;
+  uiDir?: string;
   server: {
     token?: string;
   };
@@ -50,16 +51,39 @@ export function sendSse(res: express.Response, event: string, data: unknown): vo
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
+function isProtectedApiPath(pathname: string): boolean {
+  return pathname === "/health" || pathname.startsWith("/chat");
+}
+
 export function createApp(config: HttpAppConfig, harness: ChatHarness): express.Express {
   const app = express();
+  const uiDir = path.resolve(config.uiDir ?? path.join(process.cwd(), "ui"));
+
   const upload = multer({
     dest: path.join(config.sessions, "uploads"),
     limits: { fileSize: 25 * 1024 * 1024 },
   });
 
+  // Dev CORS policy: allow all origins.
+  app.use((req, res, next) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+    res.header("Access-Control-Allow-Headers", "Authorization,Content-Type");
+
+    if (req.method === "OPTIONS") {
+      res.sendStatus(204);
+      return;
+    }
+
+    next();
+  });
+
   app.use(express.json({ limit: "2mb" }));
+  app.use(express.static(uiDir));
 
   app.use((req, res, next) => {
+    if (!isProtectedApiPath(req.path)) return next();
+
     const token = config.server.token?.trim();
     if (!token) return next();
 
@@ -71,6 +95,10 @@ export function createApp(config: HttpAppConfig, harness: ChatHarness): express.
     const presented = auth.slice("Bearer ".length).trim();
     if (presented !== token) return res.status(401).json({ error: "Invalid bearer token" });
     return next();
+  });
+
+  app.get("/", (_req, res) => {
+    res.sendFile(path.join(uiDir, "index.html"));
   });
 
   app.get("/health", (_req, res) => {

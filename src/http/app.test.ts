@@ -7,10 +7,20 @@ import { cleanupFile, createApp, parseMessage, parseUserId, sendSse } from "./ap
 
 const dirs: string[] = [];
 
-async function makeSessionsDir() {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "http-app-"));
+async function makeTempDir(prefix: string) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), prefix));
   dirs.push(dir);
   return dir;
+}
+
+async function makeSessionsDir() {
+  return makeTempDir("http-app-");
+}
+
+async function makeUiDir() {
+  const uiDir = await makeTempDir("http-ui-");
+  await writeFile(path.join(uiDir, "index.html"), "<html><body>ui ok</body></html>", "utf8");
+  return uiDir;
 }
 
 afterEach(async () => {
@@ -54,12 +64,13 @@ describe("http app helpers", () => {
 describe("createApp", () => {
   it("handles auth, health, and chat routes", async () => {
     const sessions = await makeSessionsDir();
+    const uiDir = await makeUiDir();
     const harness = {
       prompt: vi.fn().mockResolvedValue("assistant reply"),
       promptStream: vi.fn(),
     };
 
-    const app = createApp({ sessions, server: { token: "secret" } }, harness as never);
+    const app = createApp({ sessions, uiDir, server: { token: "secret" } }, harness as never);
 
     await request(app).get("/health").expect(401);
     await request(app).post("/chat").set("authorization", "Bearer wrong").send({ userId: "u", message: "m" }).expect(401);
@@ -74,14 +85,38 @@ describe("createApp", () => {
     expect(harness.prompt).toHaveBeenCalledWith("u", "hello", undefined);
   });
 
+  it("serves UI at / and applies CORS headers", async () => {
+    const sessions = await makeSessionsDir();
+    const uiDir = await makeUiDir();
+    const harness = {
+      prompt: vi.fn(),
+      promptStream: vi.fn(),
+    };
+
+    const app = createApp({ sessions, uiDir, server: { token: "secret" } }, harness as never);
+
+    const root = await request(app).get("/").expect(200);
+    expect(root.text).toContain("ui ok");
+
+    const preflight = await request(app)
+      .options("/chat")
+      .set("origin", "http://example.local")
+      .set("access-control-request-method", "POST")
+      .expect(204);
+
+    expect(preflight.headers["access-control-allow-origin"]).toBe("*");
+    expect(preflight.headers["access-control-allow-headers"]).toContain("Authorization");
+  });
+
   it("returns validation and execution errors from /chat", async () => {
     const sessions = await makeSessionsDir();
+    const uiDir = await makeUiDir();
     const harness = {
       prompt: vi.fn().mockRejectedValue(new Error("chat-failed")),
       promptStream: vi.fn(),
     };
 
-    const app = createApp({ sessions, server: {} }, harness as never);
+    const app = createApp({ sessions, uiDir, server: {} }, harness as never);
 
     await request(app).post("/chat").send({ userId: "u" }).expect(400);
 
@@ -91,6 +126,7 @@ describe("createApp", () => {
 
   it("streams deltas/done events and streams error events when already in SSE mode", async () => {
     const sessions = await makeSessionsDir();
+    const uiDir = await makeUiDir();
 
     const harnessOk = {
       prompt: vi.fn(),
@@ -101,7 +137,7 @@ describe("createApp", () => {
       }),
     };
 
-    const appOk = createApp({ sessions, server: {} }, harnessOk as never);
+    const appOk = createApp({ sessions, uiDir, server: {} }, harnessOk as never);
     const streamed = await request(appOk).post("/chat/stream").send({ userId: "u", message: "m" }).expect(200);
 
     expect(streamed.text).toContain("event: delta");
@@ -116,7 +152,7 @@ describe("createApp", () => {
       }),
     };
 
-    const appErr = createApp({ sessions, server: {} }, harnessErr as never);
+    const appErr = createApp({ sessions, uiDir, server: {} }, harnessErr as never);
     const errored = await request(appErr).post("/chat/stream").send({ userId: "u", message: "m" }).expect(200);
 
     expect(errored.text).toContain("event: error");
