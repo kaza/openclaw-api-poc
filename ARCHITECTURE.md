@@ -1,0 +1,372 @@
+# Lightweight Agent Harness — Architecture & Plan
+
+## Executive Summary
+
+This document outlines the architecture for a **lightweight, self-contained AI agent harness** built on top of [pi-mono](https://github.com/badlogic/pi-mono) — the same agent SDK that powers [OpenClaw](https://github.com/openclaw/openclaw). The goal is a minimal, secure, enterprise-friendly agent runtime that provides core capabilities (memory, scheduling, voice) without the overhead of a full messaging gateway.
+
+## Motivation
+
+### Why not use OpenClaw directly?
+
+OpenClaw is a powerful multi-channel AI gateway (~100K lines of TypeScript). It handles Telegram, Discord, WhatsApp, Signal, Slack, and more — with sandboxing, plugin systems, multi-user session routing, auth profile rotation, and dozens of tools.
+
+For an enterprise application with a single integration point (one app, one user per session), most of that is unnecessary overhead and expanded attack surface:
+
+| OpenClaw Feature | Needed? | Why / Why Not |
+|---|---|---|
+| Multi-channel routing | ❌ | Single integration point — our app handles I/O |
+| Session management | ✅ | Core requirement — persistent conversations |
+| Agent loop + tools | ✅ | Core requirement — the whole point |
+| Memory (vector search) | ✅ | Long-term context across sessions |
+| Cron / scheduled tasks | ✅ | Reminders, periodic checks, background work |
+| Speech-to-text | ✅ | Voice input from users |
+| Text-to-speech | ✅ | Audio responses |
+| Browser automation | ❌ | Not in scope |
+| Sandbox / Docker | ❌ | Enterprise environment handles isolation |
+| Sub-agent spawning | ❌ | Single agent, single session per user |
+| Plugin system | ❌ | YAGNI — direct code is simpler |
+| Canvas / Nodes | ❌ | OpenClaw-specific ecosystem features |
+| Auth profile rotation | ❌ | One API key per provider suffices |
+
+### What we get from pi-mono
+
+The [pi-mono](https://github.com/badlogic/pi-mono) SDK (by [Mario Zechner](https://mariozechner.at/)) provides the battle-tested core that OpenClaw itself runs on:
+
+| Package | What it provides |
+|---|---|
+| `@mariozechner/pi-agent-core` | Agent loop, tool execution, message types, state management |
+| `@mariozechner/pi-ai` | LLM abstraction (`streamSimple()`), provider APIs (Anthropic, OpenAI, Google, Bedrock, Ollama, etc.), model discovery |
+| `@mariozechner/pi-coding-agent` | `createAgentSession()`, `SessionManager` (JSONL persistence, branching, compaction), built-in tools (read, write, edit, bash, grep, find, ls), resource loader |
+
+This is not a wrapper or a toy — it's the same engine handling production workloads through OpenClaw today.
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────┐
+│                 Your Application                 │
+│          (Web app, API server, CLI, …)           │
+└────────────────────┬────────────────────────────┘
+                     │  HTTP / direct call
+                     ▼
+┌─────────────────────────────────────────────────┐
+│              Agent Harness (this project)         │
+│                                                   │
+│  ┌──────────┐  ┌──────────┐  ┌───────────────┐  │
+│  │ HTTP API │  │  Config  │  │ System Prompt │  │
+│  │ (Express)│  │ (JSON)   │  │   Builder     │  │
+│  └────┬─────┘  └──────────┘  └───────────────┘  │
+│       │                                           │
+│       ▼                                           │
+│  ┌────────────────────────────────────────────┐  │
+│  │     pi-mono: createAgentSession()          │  │
+│  │     SessionManager (JSONL persistence)     │  │
+│  │     Agent loop + streaming + compaction    │  │
+│  └────────────────────┬───────────────────────┘  │
+│                       │                           │
+│       ┌───────────────┼───────────────┐          │
+│       ▼               ▼               ▼          │
+│  ┌─────────┐   ┌───────────┐   ┌──────────┐    │
+│  │ Built-in│   │  Custom   │   │  Custom  │    │
+│  │  Tools  │   │  Tools    │   │  Tools   │    │
+│  │ (pi-mono│   │ (memory,  │   │ (user-   │    │
+│  │  read,  │   │  cron,    │   │  defined)│    │
+│  │  write, │   │  tts,     │   │          │    │
+│  │  edit,  │   │  stt)     │   │          │    │
+│  │  bash…) │   │           │   │          │    │
+│  └─────────┘   └─────┬─────┘   └──────────┘    │
+│                       │                           │
+│          ┌────────────┼────────────┐             │
+│          ▼            ▼            ▼             │
+│   ┌──────────┐ ┌──────────┐ ┌──────────┐       │
+│   │  SQLite  │ │  croner  │ │ External │       │
+│   │  + vec   │ │ scheduler│ │   APIs   │       │
+│   │ (memory) │ │ (timers) │ │(TTS/STT) │       │
+│   └──────────┘ └──────────┘ └──────────┘       │
+└─────────────────────────────────────────────────┘
+```
+
+## Components
+
+### 1. Core Agent Runtime
+
+**Source:** `@mariozechner/pi-coding-agent` + `@mariozechner/pi-ai` (npm packages)
+
+The entire agent bootstrap fits in ~20 lines:
+
+```typescript
+import { createAgentSession, SessionManager } from "@mariozechner/pi-coding-agent";
+import { getModel } from "@mariozechner/pi-ai";
+
+const { session } = await createAgentSession({
+  cwd: workspaceDir,
+  model: getModel("anthropic", "claude-sonnet-4-20250514"),
+  thinkingLevel: "high",
+  sessionManager: SessionManager.create(sessionDir),
+  customTools: [memorySearchTool, cronTool, ttsTool, ...userTools],
+});
+
+// Send a message
+await session.prompt("Hello, what's on my schedule today?");
+
+// Listen for streaming responses
+session.on("message_update", (event) => {
+  sendToClient(event.text);
+});
+```
+
+**What you get out of the box:**
+- Session persistence (JSONL files with branching and compaction)
+- Streaming responses
+- Context window management (auto-compaction when context fills up)
+- Model switching at runtime
+- 7 built-in tools: `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`
+- Provider-agnostic: Anthropic, OpenAI, Google, Bedrock, Ollama, and more
+
+**Effort:** Minimal — this is configuration, not implementation.
+
+### 2. Memory (Vector Search)
+
+**Source:** Custom implementation. Inspired by OpenClaw's `src/memory/` (17K lines) but drastically simplified for single-user use.
+
+OpenClaw's memory system supports multiple embedding providers, batch processing, temporal decay, MMR reranking, remote embedding servers, and multi-agent memory isolation. We need approximately 5% of that.
+
+**Our implementation:**
+- **Storage:** `node:sqlite` (built into Node 22+) + [`sqlite-vec`](https://github.com/asg017/sqlite-vec) extension for vector similarity
+- **Embeddings:** One provider — OpenAI `text-embedding-3-small` (1536 dimensions, $0.02/1M tokens)
+- **Search:** Hybrid — BM25 full-text search (SQLite FTS5) + vector cosine similarity, merged with score normalization
+- **Indexing:** File watcher on workspace markdown files (MEMORY.md, memory/*.md). Chunk by heading/paragraph, embed on change.
+- **Agent tools:**
+  - `memory_search(query: string, limit?: number)` → returns top-K relevant snippets with source attribution
+  - `memory_store(text: string, metadata?: object)` → stores a new memory chunk and embeds it
+
+**Schema:**
+```sql
+CREATE TABLE chunks (
+  id INTEGER PRIMARY KEY,
+  source TEXT NOT NULL,        -- file path or 'agent-stored'
+  content TEXT NOT NULL,       -- the actual text chunk
+  metadata TEXT,               -- JSON metadata
+  embedding BLOB,              -- float32 vector
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE VIRTUAL TABLE chunks_fts USING fts5(content, source);
+CREATE VIRTUAL TABLE chunks_vec USING vec0(embedding float[1536]);
+```
+
+**Effort:** 500–800 lines. 3–5 days. This is the most complex component.
+
+### 3. Cron / Scheduled Tasks
+
+**Source:** [`croner`](https://www.npmjs.com/package/croner) npm package (same library OpenClaw uses internally) + custom job store.
+
+OpenClaw's cron system (17K lines) handles isolated agent sessions, delivery routing, webhooks, subagent followups, and multi-agent job isolation. We need a scheduler that fires callbacks.
+
+**Our implementation:**
+- **Scheduler:** `croner` for cron expressions, intervals, and one-shot timers
+- **Persistence:** JSON file (`cron-jobs.json`) — survives restarts
+- **Agent tools:**
+  - `cron_add(schedule, task, name?)` → creates a scheduled job
+  - `cron_list()` → shows all active jobs
+  - `cron_remove(id)` → deletes a job
+- **Job types:**
+  - One-shot: `{ "kind": "at", "at": "2026-03-15T09:00:00Z" }`
+  - Recurring: `{ "kind": "cron", "expr": "0 9 * * MON" }`
+  - Interval: `{ "kind": "every", "everyMs": 3600000 }`
+- **Execution:** When a job fires, it injects the task text as a new message into the agent session
+
+**Effort:** 200–300 lines. 1 day.
+
+### 4. Speech-to-Text (STT)
+
+**Source:** Thin API wrappers over existing cloud services.
+
+**Supported providers:**
+- **OpenAI Whisper:** `POST https://api.openai.com/v1/audio/transcriptions`
+- **ElevenLabs Scribe:** `POST https://api.elevenlabs.io/v1/speech-to-text` (alternative)
+
+**Agent tool:** `transcribe(audioFilePath, language?)` → returns transcript text
+
+**Configuration:** Provider selection + API key in config. User can add custom STT providers by implementing a simple interface.
+
+**Effort:** 50–80 lines per provider. A few hours.
+
+### 5. Text-to-Speech (TTS)
+
+**Source:** Thin API wrappers over existing cloud services.
+
+**Supported providers:**
+- **ElevenLabs:** `POST https://api.elevenlabs.io/v1/text-to-speech/{voice_id}`
+- **OpenAI TTS:** `POST https://api.openai.com/v1/audio/speech` (alternative)
+
+**Agent tool:** `tts(text, voice?)` → returns path to generated audio file
+
+**Configuration:** Provider, voice, model selection in config.
+
+**Effort:** 50–80 lines per provider. A few hours.
+
+### 6. HTTP API
+
+**Source:** Custom. Express.js (or raw `node:http` if we want zero dependencies).
+
+**Endpoints:**
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/chat` | Send message, receive full response |
+| `POST` | `/chat/stream` | Send message, receive SSE stream |
+| `POST` | `/transcribe` | Upload audio, receive transcript |
+| `GET`  | `/sessions` | List active sessions |
+| `DELETE` | `/sessions/:id` | Clear a session |
+| `GET` | `/health` | Health check |
+
+**Session routing:** User ID in request → maps to session file. One user = one persistent JSONL session.
+
+**Authentication:** Bearer token (configurable). Simple but sufficient for internal/enterprise use.
+
+**Effort:** 150–200 lines. 1 day.
+
+### 7. System Prompt Builder
+
+**Source:** Custom. Inspired by OpenClaw's bootstrap file loading.
+
+Reads workspace files and injects them into the agent's system prompt:
+- `AGENTS.md` — agent instructions and personality
+- `TOOLS.md` — tool-specific notes
+- `MEMORY.md` — long-term memory (also indexed for vector search)
+
+The builder concatenates these files with appropriate headers, similar to how OpenClaw's `buildAgentSystemPrompt()` works but without the 50+ configuration parameters.
+
+**Effort:** ~100 lines. Half a day.
+
+### 8. Configuration
+
+Single `config.json` file:
+
+```json
+{
+  "llm": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-20250514",
+    "apiKey": "${ANTHROPIC_API_KEY}",
+    "thinkingLevel": "high"
+  },
+  "embedding": {
+    "provider": "openai",
+    "model": "text-embedding-3-small",
+    "apiKey": "${OPENAI_API_KEY}"
+  },
+  "tts": {
+    "provider": "elevenlabs",
+    "voiceId": "XrExE9yKIg1WjnnlVkGX",
+    "apiKey": "${ELEVENLABS_API_KEY}"
+  },
+  "stt": {
+    "provider": "openai",
+    "apiKey": "${OPENAI_API_KEY}"
+  },
+  "server": {
+    "port": 3000,
+    "token": "${AGENT_API_TOKEN}"
+  },
+  "workspace": "./workspace",
+  "sessions": "./sessions"
+}
+```
+
+Environment variables override secrets (the `${...}` syntax). No secrets in files.
+
+**Effort:** ~50 lines. Trivial.
+
+## Project Structure
+
+```
+agent-harness/
+├── src/
+│   ├── index.ts              # Entry point, HTTP server bootstrap
+│   ├── agent.ts              # createAgentSession wrapper, prompt builder
+│   ├── config.ts             # Config loader with env var resolution
+│   ├── tools/
+│   │   ├── memory.ts         # memory_search, memory_store agent tools
+│   │   ├── cron.ts           # cron_add, cron_list, cron_remove tools
+│   │   ├── tts.ts            # text-to-speech agent tool
+│   │   └── stt.ts            # speech-to-text agent tool
+│   ├── memory/
+│   │   ├── store.ts          # SQLite + sqlite-vec operations
+│   │   ├── embeddings.ts     # Embedding API client
+│   │   ├── indexer.ts        # File watcher + markdown chunker
+│   │   └── search.ts         # Hybrid BM25 + vector search
+│   └── cron/
+│       ├── scheduler.ts      # croner wrapper + job execution
+│       └── store.ts          # JSON persistence for jobs
+├── workspace/                # Agent workspace (user-editable)
+│   ├── AGENTS.md             # Agent instructions
+│   ├── TOOLS.md              # Tool notes
+│   └── MEMORY.md             # Long-term memory
+├── config.json               # Configuration
+├── package.json
+├── tsconfig.json
+└── README.md
+```
+
+## Technology Stack
+
+| Component | Technology | Why |
+|---|---|---|
+| Runtime | Node.js 22+ | Required for `node:sqlite` built-in |
+| Language | TypeScript | Type safety, same as pi-mono |
+| Agent SDK | pi-mono (`pi-coding-agent`, `pi-ai`) | Battle-tested, same engine as OpenClaw |
+| Database | `node:sqlite` + `sqlite-vec` | Zero-dependency SQLite with vector search |
+| Scheduling | `croner` | Lightweight, well-maintained, cron + interval + one-shot |
+| HTTP | Express 5 | Minimal, familiar, good enough |
+| LLM | Anthropic Claude (default) | Configurable — pi-ai supports all major providers |
+| Embeddings | OpenAI `text-embedding-3-small` | Cheap, fast, good quality |
+
+## Implementation Timeline
+
+| Day | Component | Deliverable |
+|---|---|---|
+| 1 | Core + HTTP API | End-to-end working: send message → get response |
+| 2–4 | Memory system | SQLite store, embeddings, indexer, hybrid search, agent tools |
+| 5 | Cron scheduler | Job store, croner integration, agent tools |
+| 5–6 | STT + TTS | API wrappers, agent tools |
+| 7 | Polish + docs | README, config validation, error handling, tests |
+
+**Total estimated effort: ~7 working days** for a fully functional agent with persistent memory, scheduled tasks, and voice I/O.
+
+## What We Explicitly Do NOT Build
+
+| Feature | Reason |
+|---|---|
+| Multi-channel messaging | Our app handles all I/O |
+| Docker sandboxing | Enterprise environment manages isolation |
+| Browser automation | Out of scope |
+| Sub-agent orchestration | Single agent per session |
+| Plugin/extension system | Direct code is simpler (YAGNI) |
+| Auth profile rotation | One API key per provider |
+| Multi-model failover | Can be added later if needed |
+| Rate limiting / billing | Application layer handles this |
+
+## Security Considerations
+
+- **Minimal surface area:** No gateway daemon, no WebSocket server, no multi-tenant routing
+- **No secrets in config files:** Environment variable resolution for all API keys
+- **Session isolation:** Each user gets a separate JSONL file — no shared state
+- **Tool restrictions:** Agent tools operate within the configured workspace directory
+- **Bearer token auth:** Simple but effective for internal APIs
+
+## Future Extensions (Not in v1)
+
+These can be added incrementally without architectural changes:
+
+- **Web search tool** — API wrapper around Brave/Google/Perplexity
+- **Image analysis tool** — Vision model API calls
+- **File upload handling** — Accept files via HTTP, make available to agent
+- **WebSocket streaming** — Real-time bidirectional communication
+- **Multi-model failover** — Try provider B if provider A fails
+- **Conversation export** — HTML/PDF export of session history
+
+---
+
+*This document serves as the architectural decision record and implementation plan. It will be updated as the project evolves.*
