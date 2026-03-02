@@ -105,6 +105,11 @@
       flex-direction: column;
       gap: 10px;
       padding: 16px;
+      transition: background 220ms ease;
+    }
+
+    #messages.resetting {
+      background: #15283e;
     }
 
     .message {
@@ -136,6 +141,7 @@
       color: var(--muted);
       font-size: 12px;
       max-width: 90%;
+      text-align: center;
     }
 
     .typing::after {
@@ -152,6 +158,7 @@
       padding: 12px;
       border-top: 1px solid var(--line);
       background: var(--panel);
+      align-items: stretch;
     }
 
     #messageInput {
@@ -161,16 +168,32 @@
       flex: 1;
     }
 
-    #sendBtn {
-      background: var(--accent);
-      border-color: #3d8be0;
-      color: white;
+    #sendBtn,
+    #recordBtn {
       min-width: 96px;
       font-weight: 600;
       cursor: pointer;
     }
 
-    #sendBtn:disabled {
+    #sendBtn {
+      background: var(--accent);
+      border-color: #3d8be0;
+      color: white;
+    }
+
+    #recordBtn {
+      background: #2a2a2a;
+      border-color: #3a3a3a;
+    }
+
+    #recordBtn.recording {
+      background: #5b1f1f;
+      border-color: #8a2e2e;
+      color: #ffd9d9;
+    }
+
+    #sendBtn:disabled,
+    #recordBtn:disabled {
       opacity: 0.5;
       cursor: not-allowed;
     }
@@ -193,7 +216,7 @@
       <label>Session</label>
       <div class="status">
         <span id="statusDot" class="dot"></span>
-        <span id="statusText">Not connected</span>
+        <span id="statusText">Disconnected</span>
       </div>
       <div class="meta" id="sessionText">User: -</div>
     </div>
@@ -203,7 +226,8 @@
 
   <div class="composer">
     <textarea id="messageInput" placeholder="Type a message and press Enter…"></textarea>
-    <button id="sendBtn">Send</button>
+    <button id="recordBtn" type="button" title="Record voice input">🎙️ Voice</button>
+    <button id="sendBtn" type="button">Send</button>
   </div>
 
   <script>
@@ -220,8 +244,12 @@
     const messagesEl = document.getElementById("messages");
     const messageInput = document.getElementById("messageInput");
     const sendBtn = document.getElementById("sendBtn");
+    const recordBtn = document.getElementById("recordBtn");
 
     let sending = false;
+    let mediaRecorder = null;
+    let recordingChunks = [];
+    let recordingStream = null;
 
     tokenInput.value = localStorage.getItem(STORAGE.token) || "";
     userIdInput.value = localStorage.getItem(STORAGE.userId) || "default-user";
@@ -229,26 +257,29 @@
 
     tokenInput.addEventListener("input", () => {
       localStorage.setItem(STORAGE.token, tokenInput.value);
-      healthCheck();
+      void healthCheck();
     });
 
     userIdInput.addEventListener("change", () => {
       const next = userIdInput.value.trim() || "default-user";
       userIdInput.value = next;
       localStorage.setItem(STORAGE.userId, next);
-      clearMessages();
+      clearMessages(true);
       addMessage("system", `Started new session: ${next}`);
       updateSessionText();
+      setStatus("warn", "Session switched (chat reset)");
+      void healthCheck();
     });
 
     messageInput.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
-        sendMessage();
+        void sendTextMessage();
       }
     });
 
-    sendBtn.addEventListener("click", sendMessage);
+    sendBtn.addEventListener("click", () => void sendTextMessage());
+    recordBtn.addEventListener("click", () => void toggleRecording());
 
     function authHeaders() {
       const token = tokenInput.value.trim();
@@ -257,9 +288,12 @@
       };
     }
 
+    function currentUserId() {
+      return userIdInput.value.trim() || "default-user";
+    }
+
     function updateSessionText() {
-      const userId = userIdInput.value.trim() || "default-user";
-      sessionText.textContent = `User: ${userId}`;
+      sessionText.textContent = `User: ${currentUserId()}`;
     }
 
     function setStatus(kind, text) {
@@ -267,8 +301,11 @@
       statusText.textContent = text;
     }
 
-    function clearMessages() {
+    function clearMessages(withVisualReset = false) {
       messagesEl.innerHTML = "";
+      if (!withVisualReset) return;
+      messagesEl.classList.add("resetting");
+      window.setTimeout(() => messagesEl.classList.remove("resetting"), 260);
     }
 
     function addMessage(role, text) {
@@ -280,7 +317,18 @@
       return node;
     }
 
+    function setBusyState(isBusy) {
+      sending = isBusy;
+      sendBtn.disabled = isBusy;
+      recordBtn.disabled = isBusy;
+    }
+
     async function healthCheck() {
+      if (!tokenInput.value.trim()) {
+        setStatus("bad", "Disconnected (missing token)");
+        return;
+      }
+
       try {
         setStatus("warn", "Checking /health…");
         const response = await fetch("/health", {
@@ -296,55 +344,98 @@
         }
 
         if (response.status === 401 || response.status === 403) {
-          setStatus("bad", "Auth required / invalid token");
+          setStatus("bad", "Disconnected (invalid token)");
           return;
         }
 
-        setStatus("bad", `Health failed (${response.status})`);
+        setStatus("bad", `Disconnected (health ${response.status})`);
       } catch {
-        setStatus("bad", "Server unreachable");
+        setStatus("bad", "Disconnected (server unreachable)");
       }
     }
 
-    async function sendMessage() {
+    async function sendTextMessage() {
+      if (sending) return;
+      const text = messageInput.value.trim();
+      if (!text) return;
+
+      messageInput.value = "";
+      await sendStreamRequest({
+        outgoingLabel: text,
+        payloadBuilder: () => ({
+          type: "json",
+          body: {
+            userId: currentUserId(),
+            message: text,
+          },
+        }),
+      });
+    }
+
+    async function sendAudioMessage(audioBlob) {
       if (sending) return;
 
-      const text = messageInput.value.trim();
-      const userId = userIdInput.value.trim() || "default-user";
+      const typedMessage = messageInput.value.trim();
+      messageInput.value = "";
 
-      if (!text) return;
+      const kb = Math.max(1, Math.round(audioBlob.size / 1024));
+      const label = typedMessage
+        ? `🎤 Voice (${kb} KB) + text: ${typedMessage}`
+        : `🎤 Voice (${kb} KB)`;
+
+      await sendStreamRequest({
+        outgoingLabel: label,
+        payloadBuilder: () => {
+          const form = new FormData();
+          form.set("userId", currentUserId());
+          if (typedMessage) form.set("message", typedMessage);
+          form.set("audio", audioBlob, `voice-${Date.now()}.ogg`);
+
+          return {
+            type: "form",
+            body: form,
+          };
+        },
+      });
+    }
+
+    async function sendStreamRequest({ outgoingLabel, payloadBuilder }) {
       if (!tokenInput.value.trim()) {
         addMessage("system", "Set bearer token first.");
-        setStatus("bad", "Missing token");
+        setStatus("bad", "Disconnected (missing token)");
         return;
       }
 
-      sending = true;
-      sendBtn.disabled = true;
-      messageInput.value = "";
-
-      addMessage("user", text);
+      setBusyState(true);
+      addMessage("user", outgoingLabel);
       const agentNode = addMessage("agent", "");
       agentNode.classList.add("typing");
 
       try {
         setStatus("warn", "Streaming response…");
 
+        const payload = payloadBuilder();
+        const headers = {
+          ...authHeaders(),
+        };
+
+        let body;
+        if (payload.type === "json") {
+          headers["Content-Type"] = "application/json";
+          body = JSON.stringify(payload.body);
+        } else {
+          body = payload.body;
+        }
+
         const response = await fetch("/chat/stream", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...authHeaders(),
-          },
-          body: JSON.stringify({
-            userId,
-            message: text,
-          }),
+          headers,
+          body,
         });
 
         if (!response.ok || !response.body) {
-          const body = await response.text();
-          throw new Error(`HTTP ${response.status}: ${body || "request failed"}`);
+          const errorBody = await response.text();
+          throw new Error(`HTTP ${response.status}: ${errorBody || "request failed"}`);
         }
 
         const reader = response.body.getReader();
@@ -357,35 +448,36 @@
           if (done) break;
 
           buffer += decoder.decode(value, { stream: true });
-          const chunks = buffer.split("\n\n");
+          const chunks = buffer.split(/\r?\n\r?\n/);
           buffer = chunks.pop() || "";
 
           for (const chunk of chunks) {
-            const lines = chunk.split("\n").map((line) => line.trimEnd());
+            const lines = chunk.split(/\r?\n/).map((line) => line.trimEnd());
             const eventLine = lines.find((line) => line.startsWith("event:"));
             const dataLine = lines.find((line) => line.startsWith("data:"));
             if (!dataLine) continue;
 
             const event = eventLine ? eventLine.slice(6).trim() : "message";
             const payloadRaw = dataLine.slice(5).trim();
-            let payload;
+
+            let data;
             try {
-              payload = JSON.parse(payloadRaw);
+              data = JSON.parse(payloadRaw);
             } catch {
               continue;
             }
 
-            if (event === "delta" && typeof payload.delta === "string") {
-              full += payload.delta;
+            if (event === "delta" && typeof data.delta === "string") {
+              full += data.delta;
               agentNode.textContent = full;
               messagesEl.scrollTop = messagesEl.scrollHeight;
-            } else if (event === "done" && typeof payload.text === "string") {
+            } else if (event === "done" && typeof data.text === "string") {
               if (!full) {
-                full = payload.text;
+                full = data.text;
                 agentNode.textContent = full;
               }
             } else if (event === "error") {
-              throw new Error(payload.error || "stream error");
+              throw new Error(typeof data.error === "string" ? data.error : "stream error");
             }
           }
         }
@@ -396,19 +488,81 @@
 
         setStatus("ok", "Connected");
       } catch (error) {
-        agentNode.textContent = `Error: ${error instanceof Error ? error.message : "unknown"}`;
-        setStatus("bad", "Request failed");
+        const message = error instanceof Error ? error.message : "unknown";
+        agentNode.textContent = `Error: ${message}`;
+        setStatus("bad", "Disconnected (request failed)");
       } finally {
         agentNode.classList.remove("typing");
-        sending = false;
-        sendBtn.disabled = false;
+        setBusyState(false);
         messageInput.focus();
       }
     }
 
-    addMessage("system", "Ready. Enter token + user ID, then send a message.");
-    healthCheck();
-    setInterval(healthCheck, 15000);
+    async function toggleRecording() {
+      if (mediaRecorder && mediaRecorder.state === "recording") {
+        mediaRecorder.stop();
+        return;
+      }
+
+      if (!navigator.mediaDevices?.getUserMedia) {
+        addMessage("system", "Voice recording not supported in this browser.");
+        return;
+      }
+
+      try {
+        recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+        const preferred = ["audio/ogg;codecs=opus", "audio/ogg"];
+        const mimeType = preferred.find((type) => {
+          if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return false;
+          return MediaRecorder.isTypeSupported(type);
+        });
+
+        mediaRecorder = mimeType
+          ? new MediaRecorder(recordingStream, { mimeType })
+          : new MediaRecorder(recordingStream);
+
+        recordingChunks = [];
+
+        mediaRecorder.addEventListener("dataavailable", (event) => {
+          if (event.data && event.data.size > 0) {
+            recordingChunks.push(event.data);
+          }
+        });
+
+        mediaRecorder.addEventListener("stop", async () => {
+          try {
+            const blob = new Blob(recordingChunks, {
+              type: mediaRecorder?.mimeType || "audio/ogg",
+            });
+            await sendAudioMessage(blob);
+          } finally {
+            if (recordingStream) {
+              for (const track of recordingStream.getTracks()) {
+                track.stop();
+              }
+            }
+            recordingStream = null;
+            mediaRecorder = null;
+            recordingChunks = [];
+            recordBtn.classList.remove("recording");
+            recordBtn.textContent = "🎙️ Voice";
+          }
+        }, { once: true });
+
+        mediaRecorder.start(200);
+        recordBtn.classList.add("recording");
+        recordBtn.textContent = "⏹ Stop";
+        setStatus("warn", "Recording voice input…");
+      } catch (error) {
+        addMessage("system", `Could not start microphone: ${error instanceof Error ? error.message : "unknown"}`);
+        setStatus("bad", "Disconnected (microphone unavailable)");
+      }
+    }
+
+    addMessage("system", "Ready. Enter token + user ID, then send text or voice.");
+    void healthCheck();
+    window.setInterval(() => void healthCheck(), 15000);
   </script>
 </body>
 </html>
