@@ -53,10 +53,14 @@ describe("MemoryIndexer", () => {
     indexer.stop();
   });
 
-  it("reindexAll scans MEMORY.md and memory/*.md files", async () => {
+  it("reindexAll scans root memory docs and memory/*.md files", async () => {
     const workspace = await makeWorkspace();
+    const agents = path.join(workspace, "AGENTS.md");
+    const tools = path.join(workspace, "TOOLS.md");
     const rootMemory = path.join(workspace, "MEMORY.md");
     const daily = path.join(workspace, "memory", "2026-03-02.md");
+    await writeFile(agents, "agents", "utf8");
+    await writeFile(tools, "tools", "utf8");
     await writeFile(rootMemory, "root", "utf8");
     await writeFile(daily, "daily", "utf8");
 
@@ -75,6 +79,8 @@ describe("MemoryIndexer", () => {
     const spy = vi.spyOn(indexer, "reindexFile").mockResolvedValue();
     await indexer.reindexAll();
 
+    expect(spy).toHaveBeenCalledWith(agents);
+    expect(spy).toHaveBeenCalledWith(tools);
     expect(spy).toHaveBeenCalledWith(rootMemory);
     expect(spy).toHaveBeenCalledWith(daily);
   });

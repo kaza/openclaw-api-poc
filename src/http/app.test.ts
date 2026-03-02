@@ -1,9 +1,9 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanupFile, createApp, parseMessage, parseUserId, sendSse } from "./app.js";
+import { cleanupFile, createApp, moveUploadToUserDir, parseMessage, parseUserId, sendSse } from "./app.js";
 
 const dirs: string[] = [];
 
@@ -54,6 +54,24 @@ describe("http app helpers", () => {
     await expect(cleanupFile(undefined)).resolves.toBeUndefined();
   });
 
+  it("moveUploadToUserDir relocates files into sessions/{user}/uploads", async () => {
+    const sessions = await makeSessionsDir();
+    const tmpDir = path.join(sessions, ".uploads-tmp");
+    await rm(tmpDir, { recursive: true, force: true });
+    await writeFile(path.join(sessions, "raw.bin"), "audio", "utf8");
+
+    const src = path.join(sessions, "raw.bin");
+    const moved = await moveUploadToUserDir(sessions, "user/with:chars", {
+      path: src,
+      filename: "upload-id",
+      originalname: "voice.ogg",
+    } as Express.Multer.File);
+
+    expect(moved).toBe(path.join(sessions, "user_with_chars", "uploads", "upload-id.ogg"));
+    await expect(stat(moved!)).resolves.toBeTruthy();
+    await expect(readFile(src, "utf8")).rejects.toThrow();
+  });
+
   it("sendSse writes expected SSE frame", () => {
     const writes: string[] = [];
     sendSse({ write: (chunk: string) => writes.push(chunk) } as never, "delta", { x: 1 });
@@ -83,6 +101,30 @@ describe("createApp", () => {
 
     expect(ok.body).toEqual({ userId: "u", text: "assistant reply" });
     expect(harness.prompt).toHaveBeenCalledWith("u", "hello", undefined);
+  });
+
+  it("stores multipart uploads under sessions/{user}/uploads before handing to harness", async () => {
+    const sessions = await makeSessionsDir();
+    const uiDir = await makeUiDir();
+    const harness = {
+      prompt: vi.fn().mockResolvedValue("ok"),
+      promptStream: vi.fn(),
+    };
+
+    const app = createApp({ sessions, uiDir, server: {} }, harness as never);
+
+    await request(app)
+      .post("/chat")
+      .field("userId", "user-1")
+      .field("message", "hello")
+      .attach("audio", Buffer.from("audio"), "clip.ogg")
+      .expect(200);
+
+    expect(harness.prompt).toHaveBeenCalledTimes(1);
+    const audioPath = harness.prompt.mock.calls[0][2] as string;
+    expect(audioPath).toContain(path.join("user-1", "uploads"));
+
+    await expect(stat(audioPath)).rejects.toThrow();
   });
 
   it("serves UI at / and applies CORS headers", async () => {
@@ -140,6 +182,7 @@ describe("createApp", () => {
     const appOk = createApp({ sessions, uiDir, server: {} }, harnessOk as never);
     const streamed = await request(appOk).post("/chat/stream").send({ userId: "u", message: "m" }).expect(200);
 
+    expect(streamed.text).toContain(": stream-open");
     expect(streamed.text).toContain("event: delta");
     expect(streamed.text).toContain('data: {"delta":"a"}');
     expect(streamed.text).toContain("event: done");

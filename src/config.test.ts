@@ -58,8 +58,6 @@ describe("loadConfig", () => {
 
     expect(config.workspace).toBe(path.join(root, "workspace"));
     expect(config.sessions).toBe(path.join(root, "sessions"));
-    expect(config.memory?.dbPath).toBe(path.join(root, "sessions", "memory.db"));
-    expect(config.cron?.storePath).toBe(path.join(root, "sessions", "cron-jobs.json"));
     expect(config.memory?.watch).toBe(true);
     expect(config.memory?.watchIntervalMs).toBe(10_000);
     expect(config.embedding.dimensions).toBe(1536);
@@ -67,8 +65,6 @@ describe("loadConfig", () => {
 
     await expect(stat(config.workspace)).resolves.toBeTruthy();
     await expect(stat(config.sessions)).resolves.toBeTruthy();
-    await expect(stat(path.dirname(config.memory!.dbPath!))).resolves.toBeTruthy();
-    await expect(stat(path.dirname(config.cron!.storePath!))).resolves.toBeTruthy();
     await expect(stat(config.tts.outputDir!)).resolves.toBeTruthy();
 
     await rm(root, { recursive: true, force: true });

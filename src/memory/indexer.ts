@@ -121,8 +121,12 @@ export class MemoryIndexer {
 
   private async getTargetFiles(): Promise<string[]> {
     const files: string[] = [];
-    const rootMemory = path.join(this.options.workspaceDir, "MEMORY.md");
-    if (await exists(rootMemory)) files.push(rootMemory);
+
+    const rootFiles = ["AGENTS.md", "TOOLS.md", "MEMORY.md"];
+    for (const rootFile of rootFiles) {
+      const filePath = path.join(this.options.workspaceDir, rootFile);
+      if (await exists(filePath)) files.push(filePath);
+    }
 
     const memoryDir = path.join(this.options.workspaceDir, "memory");
     if (await exists(memoryDir)) {

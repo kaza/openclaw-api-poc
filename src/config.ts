@@ -35,12 +35,8 @@ export interface HarnessConfig {
   workspace: string;
   sessions: string;
   memory?: {
-    dbPath?: string;
     watch?: boolean;
     watchIntervalMs?: number;
-  };
-  cron?: {
-    storePath?: string;
   };
 }
 
@@ -74,12 +70,8 @@ export async function loadConfig(configPath = path.resolve(process.cwd(), "confi
   config.sessions = path.resolve(configDir, config.sessions);
 
   config.memory ??= {};
-  config.memory.dbPath = path.resolve(configDir, config.memory.dbPath ?? path.join(config.sessions, "memory.db"));
   config.memory.watch ??= true;
   config.memory.watchIntervalMs ??= 10_000;
-
-  config.cron ??= {};
-  config.cron.storePath = path.resolve(configDir, config.cron.storePath ?? path.join(config.sessions, "cron-jobs.json"));
 
   config.server.port ??= 3000;
   config.embedding.dimensions ??= 1536;
@@ -87,8 +79,6 @@ export async function loadConfig(configPath = path.resolve(process.cwd(), "confi
 
   await mkdir(config.workspace, { recursive: true });
   await mkdir(config.sessions, { recursive: true });
-  await mkdir(path.dirname(config.memory.dbPath), { recursive: true });
-  await mkdir(path.dirname(config.cron.storePath), { recursive: true });
   await mkdir(config.tts.outputDir, { recursive: true });
 
   return { config, configDir };

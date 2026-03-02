@@ -1,7 +1,8 @@
 import express from "express";
 import multer from "multer";
 import path from "node:path";
-import { unlink } from "node:fs/promises";
+import { mkdir, rename, unlink } from "node:fs/promises";
+import { buildUserPaths } from "../user-paths.js";
 
 export interface ChatHarness {
   prompt(userId: string, text: string, audioFilePath?: string): Promise<string>;
@@ -46,6 +47,24 @@ export async function cleanupFile(filePath: string | undefined): Promise<void> {
   }
 }
 
+export async function moveUploadToUserDir(
+  sessionsDir: string,
+  userId: string,
+  file: Express.Multer.File | undefined,
+): Promise<string | undefined> {
+  if (!file) return undefined;
+
+  const { uploadsDir } = buildUserPaths(sessionsDir, userId);
+  await mkdir(uploadsDir, { recursive: true });
+
+  const ext = path.extname(file.originalname ?? "");
+  const filename = ext && !file.filename.endsWith(ext) ? `${file.filename}${ext}` : file.filename;
+  const targetPath = path.join(uploadsDir, filename);
+
+  await rename(file.path, targetPath);
+  return targetPath;
+}
+
 export function sendSse(res: express.Response, event: string, data: unknown): void {
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -60,7 +79,7 @@ export function createApp(config: HttpAppConfig, harness: ChatHarness): express.
   const uiDir = path.resolve(config.uiDir ?? path.join(process.cwd(), "ui"));
 
   const upload = multer({
-    dest: path.join(config.sessions, "uploads"),
+    dest: path.join(config.sessions, ".uploads-tmp"),
     limits: { fileSize: 25 * 1024 * 1024 },
   });
 
@@ -106,11 +125,13 @@ export function createApp(config: HttpAppConfig, harness: ChatHarness): express.
   });
 
   app.post("/chat", upload.single("audio"), async (req, res) => {
-    const audioFilePath = req.file?.path;
+    const originalUploadPath = req.file?.path;
+    let audioFilePath = originalUploadPath;
 
     try {
       const body = (req.body ?? {}) as Record<string, unknown>;
       const userId = parseUserId(body);
+      audioFilePath = await moveUploadToUserDir(config.sessions, userId, req.file);
       const message = parseMessage(body);
 
       if (!message && !audioFilePath) {
@@ -125,20 +146,28 @@ export function createApp(config: HttpAppConfig, harness: ChatHarness): express.
       });
     } finally {
       await cleanupFile(audioFilePath);
+      if (originalUploadPath && originalUploadPath !== audioFilePath) {
+        await cleanupFile(originalUploadPath);
+      }
     }
   });
 
   app.post("/chat/stream", upload.single("audio"), async (req, res) => {
-    const audioFilePath = req.file?.path;
-    let closed = false;
+    const originalUploadPath = req.file?.path;
+    let audioFilePath = originalUploadPath;
+    let clientDisconnected = false;
 
-    req.on("close", () => {
-      closed = true;
+    res.on("close", () => {
+      clientDisconnected = true;
+    });
+    req.on("aborted", () => {
+      clientDisconnected = true;
     });
 
     try {
       const body = (req.body ?? {}) as Record<string, unknown>;
       const userId = parseUserId(body);
+      audioFilePath = await moveUploadToUserDir(config.sessions, userId, req.file);
       const message = parseMessage(body);
 
       if (!message && !audioFilePath) {
@@ -148,18 +177,20 @@ export function createApp(config: HttpAppConfig, harness: ChatHarness): express.
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
       res.flushHeaders();
+      res.write(": stream-open\n\n");
 
       await harness.promptStream(
         userId,
         message,
         {
           onDelta: (delta) => {
-            if (closed) return;
+            if (clientDisconnected || res.writableEnded) return;
             sendSse(res, "delta", { delta });
           },
           onDone: (text) => {
-            if (closed) return;
+            if (clientDisconnected || res.writableEnded) return;
             sendSse(res, "done", { text });
             res.end();
           },
@@ -174,11 +205,16 @@ export function createApp(config: HttpAppConfig, harness: ChatHarness): express.
         return undefined;
       }
 
-      sendSse(res, "error", { error: error instanceof Error ? error.message : "stream failed" });
-      res.end();
+      if (!res.writableEnded) {
+        sendSse(res, "error", { error: error instanceof Error ? error.message : "stream failed" });
+        res.end();
+      }
       return undefined;
     } finally {
       await cleanupFile(audioFilePath);
+      if (originalUploadPath && originalUploadPath !== audioFilePath) {
+        await cleanupFile(originalUploadPath);
+      }
     }
   });
 
