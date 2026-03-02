@@ -50,6 +50,44 @@ npm run build
 npm start
 ```
 
+## Web UI
+
+The vanilla frontend at `ui/index.html` is served by Express at:
+
+- `GET /` → chat UI
+
+Features:
+
+- Bearer token input (persisted in `localStorage`)
+- User ID/session input (persisted in `localStorage`)
+- Text chat streaming over `POST /chat/stream`
+- Voice input (microphone recording in OGG, sent as multipart `audio` upload)
+- Visual separation for user vs assistant messages
+- Session + connection status indicator (`/health`)
+- CORS enabled for dev (`*` origins)
+
+## Integration Tests
+
+Integration tests live in `tests/integration/` and run against a **running server**.
+They are gated behind `TEST_INTEGRATION=true`.
+
+```bash
+# in one shell
+AGENT_API_TOKEN=your-token npm run dev
+
+# in another shell
+TEST_INTEGRATION=true \
+TEST_BEARER_TOKEN=your-token \
+TEST_BASE_URL=http://localhost:3000 \
+npm test
+```
+
+Or use:
+
+```bash
+TEST_BEARER_TOKEN=your-token npm run test:integration
+```
+
 ## API
 
 ### `GET /health`
