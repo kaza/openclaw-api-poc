@@ -62,7 +62,7 @@ describe("createApp", () => {
     const app = createApp({ sessions, server: { token: "secret" } }, harness as never);
 
     await request(app).get("/health").expect(401);
-    await request(app).post("/chat").set("authorization", "Bearer wrong").send({ userId: "u", message: "m" }).expect(403);
+    await request(app).post("/chat").set("authorization", "Bearer wrong").send({ userId: "u", message: "m" }).expect(401);
 
     const ok = await request(app)
       .post("/chat")

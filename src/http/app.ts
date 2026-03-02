@@ -69,7 +69,7 @@ export function createApp(config: HttpAppConfig, harness: ChatHarness): express.
     }
 
     const presented = auth.slice("Bearer ".length).trim();
-    if (presented !== token) return res.status(403).json({ error: "Invalid bearer token" });
+    if (presented !== token) return res.status(401).json({ error: "Invalid bearer token" });
     return next();
   });
 
