@@ -108,6 +108,12 @@
       transition: background 220ms ease;
     }
 
+    .history-loading {
+      padding: 6px 16px 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
     #messages.resetting {
       background: #15283e;
     }
@@ -209,7 +215,7 @@
     <div class="field">
       <label for="userIdInput">User ID (session key)</label>
       <input id="userIdInput" type="text" placeholder="e.g. user-123" autocomplete="off" />
-      <div class="meta">Changing user ID clears chat and starts a new session.</div>
+      <div class="meta">Changing user ID reloads that user's previous chat history.</div>
     </div>
 
     <div class="field">
@@ -222,6 +228,7 @@
     </div>
   </header>
 
+  <div id="historyLoading" class="history-loading" hidden>Loading history...</div>
   <main id="messages"></main>
 
   <div class="composer">
@@ -242,6 +249,7 @@
     const statusText = document.getElementById("statusText");
     const sessionText = document.getElementById("sessionText");
     const messagesEl = document.getElementById("messages");
+    const historyLoadingEl = document.getElementById("historyLoading");
     const messageInput = document.getElementById("messageInput");
     const sendBtn = document.getElementById("sendBtn");
     const recordBtn = document.getElementById("recordBtn");
@@ -250,9 +258,13 @@
     let mediaRecorder = null;
     let recordingChunks = [];
     let recordingStream = null;
+    let historyRequestSeq = 0;
 
-    tokenInput.value = localStorage.getItem(STORAGE.token) || "";
-    userIdInput.value = localStorage.getItem(STORAGE.userId) || "default-user";
+    const storedToken = localStorage.getItem(STORAGE.token) || "";
+    const storedUserId = localStorage.getItem(STORAGE.userId);
+
+    tokenInput.value = storedToken;
+    userIdInput.value = storedUserId || "default-user";
     updateSessionText();
 
     tokenInput.addEventListener("input", () => {
@@ -264,10 +276,10 @@
       const next = userIdInput.value.trim() || "default-user";
       userIdInput.value = next;
       localStorage.setItem(STORAGE.userId, next);
-      clearMessages(true);
-      addMessage("system", `Started new session: ${next}`);
       updateSessionText();
-      setStatus("warn", "Session switched (chat reset)");
+      clearMessages(true);
+      setStatus("warn", "Loading session history...");
+      void loadHistory();
       void healthCheck();
     });
 
@@ -315,6 +327,61 @@
       messagesEl.appendChild(node);
       messagesEl.scrollTop = messagesEl.scrollHeight;
       return node;
+    }
+
+    function setHistoryLoading(isLoading) {
+      historyLoadingEl.hidden = !isLoading;
+    }
+
+    function roleToClass(role) {
+      if (role === "user") return "user";
+      if (role === "assistant") return "agent";
+      return null;
+    }
+
+    async function loadHistory() {
+      const token = tokenInput.value.trim();
+      const userId = currentUserId();
+
+      if (!token || !userId) return;
+
+      const requestId = ++historyRequestSeq;
+      clearMessages(true);
+      setHistoryLoading(true);
+
+      try {
+        const response = await fetch(`/history?userId=${encodeURIComponent(userId)}&limit=100`, {
+          method: "GET",
+          headers: {
+            ...authHeaders(),
+          },
+        });
+
+        if (!response.ok) {
+          throw new Error(`history ${response.status}`);
+        }
+
+        const payload = await response.json();
+        if (requestId !== historyRequestSeq) return;
+
+        const historyItems = Array.isArray(payload?.messages) ? payload.messages : [];
+        for (const item of historyItems) {
+          if (!item || typeof item !== "object") continue;
+
+          const role = roleToClass(item.role);
+          const text = typeof item.text === "string" ? item.text : "";
+          if (!role || !text.trim()) continue;
+
+          addMessage(role, text);
+        }
+      } catch (error) {
+        if (requestId !== historyRequestSeq) return;
+        addMessage("system", `Could not load history: ${error instanceof Error ? error.message : "unknown"}`);
+      } finally {
+        if (requestId === historyRequestSeq) {
+          setHistoryLoading(false);
+        }
+      }
     }
 
     function setBusyState(isBusy) {
@@ -560,7 +627,12 @@
       }
     }
 
-    addMessage("system", "Ready. Enter token + user ID, then send text or voice.");
+    if (storedToken && storedUserId) {
+      void loadHistory();
+    } else {
+      addMessage("system", "Ready. Enter token + user ID, then send text or voice.");
+    }
+
     void healthCheck();
     window.setInterval(() => void healthCheck(), 15000);
   </script>

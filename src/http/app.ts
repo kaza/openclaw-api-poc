@@ -1,7 +1,8 @@
 import express from "express";
 import multer from "multer";
+import type { Dirent } from "node:fs";
 import path from "node:path";
-import { mkdir, rename, unlink } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, unlink } from "node:fs/promises";
 import { buildUserPaths } from "../user-paths.js";
 
 export interface ChatHarness {
@@ -70,8 +71,138 @@ export function sendSse(res: express.Response, event: string, data: unknown): vo
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
+interface HistoryMessage {
+  role: "user" | "assistant";
+  text: string;
+}
+
+const DEFAULT_HISTORY_LIMIT = 100;
+const MAX_HISTORY_LIMIT = 1000;
+
 function isProtectedApiPath(pathname: string): boolean {
-  return pathname === "/health" || pathname.startsWith("/chat");
+  return pathname === "/health" || pathname.startsWith("/chat") || pathname === "/history";
+}
+
+function parseHistoryLimit(value: unknown): number {
+  if (typeof value !== "string" || !value.trim()) return DEFAULT_HISTORY_LIMIT;
+
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_HISTORY_LIMIT;
+
+  return Math.min(parsed, MAX_HISTORY_LIMIT);
+}
+
+function extractTextContent(content: unknown): string {
+  if (typeof content === "string") {
+    return content.trim();
+  }
+
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
+  const textBlocks: string[] = [];
+  for (const item of content) {
+    if (!item || typeof item !== "object") continue;
+
+    const block = item as { type?: unknown; text?: unknown };
+    if (block.type !== "text" || typeof block.text !== "string") continue;
+
+    const text = block.text.trim();
+    if (text) textBlocks.push(text);
+  }
+
+  return textBlocks.join("\n\n").trim();
+}
+
+async function loadHistoryMessages(sessionsDir: string, userId: string, limit: number): Promise<HistoryMessage[]> {
+  const { sessionDir } = buildUserPaths(sessionsDir, userId);
+
+  let entries: Dirent[];
+  try {
+    entries = await readdir(sessionDir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+
+  const sessionFiles = entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+    .map((entry) => entry.name)
+    .sort();
+
+  if (!sessionFiles.length) return [];
+
+  const timeline: HistoryMessage[] = [];
+
+  for (const fileName of sessionFiles) {
+    const fullPath = path.join(sessionDir, fileName);
+    const raw = await readFile(fullPath, "utf8");
+    const lines = raw.split(/\r?\n/);
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch {
+        continue;
+      }
+
+      if (!parsed || typeof parsed !== "object") continue;
+
+      const record = parsed as {
+        type?: unknown;
+        message?: {
+          role?: unknown;
+          content?: unknown;
+        };
+      };
+
+      if (record.type !== "message") continue;
+      if (!record.message || typeof record.message !== "object") continue;
+
+      const role = record.message.role;
+      if (role !== "user" && role !== "assistant") continue;
+
+      const text = extractTextContent(record.message.content);
+      if (!text) continue;
+
+      timeline.push({ role, text });
+    }
+  }
+
+  const pairs: Array<[HistoryMessage, HistoryMessage]> = [];
+  let pendingUserMessage: HistoryMessage | undefined;
+  let latestAssistantForPendingUser: HistoryMessage | undefined;
+
+  for (const message of timeline) {
+    if (message.role === "user") {
+      if (pendingUserMessage && latestAssistantForPendingUser) {
+        pairs.push([pendingUserMessage, latestAssistantForPendingUser]);
+      }
+
+      pendingUserMessage = message;
+      latestAssistantForPendingUser = undefined;
+      continue;
+    }
+
+    if (!pendingUserMessage) continue;
+    latestAssistantForPendingUser = message;
+  }
+
+  if (pendingUserMessage && latestAssistantForPendingUser) {
+    pairs.push([pendingUserMessage, latestAssistantForPendingUser]);
+  }
+
+  const maxPairs = Math.floor(limit / 2);
+  if (maxPairs <= 0) return [];
+
+  return pairs.slice(-maxPairs).flat();
 }
 
 export function createApp(config: HttpAppConfig, harness: ChatHarness): express.Express {
@@ -122,6 +253,24 @@ export function createApp(config: HttpAppConfig, harness: ChatHarness): express.
 
   app.get("/health", (_req, res) => {
     res.json({ ok: true });
+  });
+
+  app.get("/history", async (req, res) => {
+    try {
+      const rawUserId = req.query.userId;
+      const userId = typeof rawUserId === "string" ? rawUserId.trim() : "";
+      if (!userId) {
+        return res.status(400).json({ error: "Missing userId" });
+      }
+
+      const limit = parseHistoryLimit(req.query.limit);
+      const messages = await loadHistoryMessages(config.sessions, userId, limit);
+      return res.json({ messages });
+    } catch (error) {
+      return res.status(400).json({
+        error: error instanceof Error ? error.message : "history failed",
+      });
+    }
   });
 
   app.post("/chat", upload.single("audio"), async (req, res) => {
