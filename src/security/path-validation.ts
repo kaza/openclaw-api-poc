@@ -13,17 +13,6 @@ function hasTraversalSegment(requestedPath: string): boolean {
     .includes("..");
 }
 
-function resolveRequestedPath(requestedPath: string, userDir: string, workspaceDir: string): string {
-  if (path.isAbsolute(requestedPath)) return path.resolve(requestedPath);
-
-  if (requestedPath === "workspace" || requestedPath.startsWith("workspace/") || requestedPath.startsWith("workspace\\")) {
-    const suffix = requestedPath.slice("workspace".length).replace(/^[/\\]+/, "");
-    return path.resolve(workspaceDir, suffix);
-  }
-
-  return path.resolve(userDir, requestedPath);
-}
-
 function resolveRealTargetForRead(resolvedPath: string): string {
   if (!existsSync(resolvedPath)) return resolvedPath;
   return path.resolve(realpathSync(resolvedPath));
@@ -53,12 +42,7 @@ function resolveRealRoot(rootDir: string): string {
   return path.resolve(realpathSync(normalized));
 }
 
-export function validatePath(
-  requestedPath: string,
-  userDir: string,
-  workspaceDir: string,
-  allowWrite: boolean,
-): string {
+export function validatePath(requestedPath: string, userDir: string, allowWrite: boolean): string {
   const trimmed = requestedPath.trim();
   if (!trimmed) throw new Error("Blocked path: empty path is not allowed");
 
@@ -67,38 +51,21 @@ export function validatePath(
   }
 
   const normalizedUserDir = path.resolve(userDir);
-  const normalizedWorkspaceDir = path.resolve(workspaceDir);
-  const resolvedPath = resolveRequestedPath(trimmed, normalizedUserDir, normalizedWorkspaceDir);
+  const resolvedPath = path.isAbsolute(trimmed) ? path.resolve(trimmed) : path.resolve(normalizedUserDir, trimmed);
 
-  const inUserDir = isWithin(resolvedPath, normalizedUserDir);
-  const inWorkspaceDir = isWithin(resolvedPath, normalizedWorkspaceDir);
-
-  if (!inUserDir && !inWorkspaceDir) {
-    throw new Error(`Blocked path outside allowed directories: ${requestedPath}`);
-  }
-
-  if (allowWrite && !inUserDir) {
-    throw new Error(`Blocked write outside user directory: ${requestedPath}`);
+  if (!isWithin(resolvedPath, normalizedUserDir)) {
+    throw new Error(`Blocked path outside user directory: ${requestedPath}`);
   }
 
   const realUserDir = resolveRealRoot(normalizedUserDir);
-  const realWorkspaceDir = resolveRealRoot(normalizedWorkspaceDir);
-
   const realTarget = allowWrite ? resolveRealTargetForWrite(resolvedPath) : resolveRealTargetForRead(resolvedPath);
-  const inRealUserDir = isWithin(realTarget, realUserDir);
-  const inRealWorkspaceDir = isWithin(realTarget, realWorkspaceDir);
-
-  if (!inRealUserDir && !inRealWorkspaceDir) {
-    throw new Error(`Blocked symlink escape outside allowed directories: ${requestedPath}`);
-  }
-
-  if (allowWrite && !inRealUserDir) {
-    throw new Error(`Blocked write outside user directory: ${requestedPath}`);
+  if (!isWithin(realTarget, realUserDir)) {
+    throw new Error(`Blocked symlink escape outside user directory: ${requestedPath}`);
   }
 
   return resolvedPath;
 }
 
 export function validatePathInUserDir(requestedPath: string, userDir: string): string {
-  return validatePath(requestedPath, userDir, userDir, true);
+  return validatePath(requestedPath, userDir, true);
 }

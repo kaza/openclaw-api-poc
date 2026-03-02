@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -201,7 +201,7 @@ describe("AgentHarness", () => {
     await harness.init();
 
     expect(mockState.setRuntimeApiKey).toHaveBeenCalledWith("anthropic", "llm-key");
-    expect(mockState.buildSystemPrompt).toHaveBeenCalledWith("/tmp/workspace");
+    expect(mockState.buildSystemPrompt).not.toHaveBeenCalled();
 
     expect(mockState.memoryStoreInstances).toHaveLength(0);
     expect(mockState.memoryIndexerInstances).toHaveLength(0);
@@ -220,11 +220,17 @@ describe("AgentHarness", () => {
 
     expect(mockState.createAgentSession).toHaveBeenCalledTimes(2);
 
+    expect(mockState.buildSystemPrompt).toHaveBeenNthCalledWith(1, "/tmp/sessions/user-1");
+    expect(mockState.buildSystemPrompt).toHaveBeenNthCalledWith(2, "/tmp/sessions/user_2");
+
     expect(mockState.memoryStoreInstances[0].dbPath).toBe("/tmp/sessions/user-1/memory.db");
     expect(mockState.memoryStoreInstances[1].dbPath).toBe("/tmp/sessions/user_2/memory.db");
 
-    expect(mockState.continueRecent).toHaveBeenNthCalledWith(1, "/tmp/workspace", "/tmp/sessions/user-1/session");
-    expect(mockState.continueRecent).toHaveBeenNthCalledWith(2, "/tmp/workspace", "/tmp/sessions/user_2/session");
+    expect(mockState.continueRecent).toHaveBeenNthCalledWith(1, "/tmp/sessions/user-1", "/tmp/sessions/user-1/session");
+    expect(mockState.continueRecent).toHaveBeenNthCalledWith(2, "/tmp/sessions/user_2", "/tmp/sessions/user_2/session");
+
+    expect(mockState.createAgentSession.mock.calls[0][0].cwd).toBe("/tmp/sessions/user-1");
+    expect(mockState.createAgentSession.mock.calls[1][0].cwd).toBe("/tmp/sessions/user_2");
 
     expect(mockState.cronStoreInstances[0].filePath).toBe("/tmp/sessions/user-1/cron-jobs.json");
     expect(mockState.cronStoreInstances[1].filePath).toBe("/tmp/sessions/user_2/cron-jobs.json");
@@ -318,10 +324,15 @@ describe("AgentHarness", () => {
     }
   });
 
-  it("prevents user A from reading user B files through agent session tools", async () => {
+  it("enforces per-user isolation and reads copied AGENTS.md from user directory", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-security-"));
     const sessionsDir = path.join(root, "sessions");
     const workspaceDir = path.join(root, "workspace");
+
+    await mkdir(workspaceDir, { recursive: true });
+    await writeFile(path.join(workspaceDir, "AGENTS.md"), "workspace agents", "utf8");
+    await writeFile(path.join(workspaceDir, "TOOLS.md"), "workspace tools", "utf8");
+    await writeFile(path.join(workspaceDir, "MEMORY.md"), "workspace memory", "utf8");
 
     const harness = new AgentHarness(
       makeConfig({
@@ -346,8 +357,20 @@ describe("AgentHarness", () => {
     const userAReadTool = firstSessionTools.find((tool) => tool.name === "read");
     expect(userAReadTool).toBeTruthy();
 
+    await expect(userAReadTool!.execute("id", { path: "AGENTS.md" }, undefined)).resolves.toMatchObject({
+      content: [expect.objectContaining({ text: expect.stringContaining("workspace agents") })],
+    });
+
+    await expect(userAReadTool!.execute("id", { path: "/etc/passwd" }, undefined)).rejects.toThrow(
+      /Blocked path outside user directory/,
+    );
+
+    await expect(userAReadTool!.execute("id", { path: "../user-b/secret.txt" }, undefined)).rejects.toThrow(
+      /Blocked path traversal attempt|Blocked path outside user directory/,
+    );
+
     await expect(userAReadTool!.execute("id", { path: userBSecretPath }, undefined)).rejects.toThrow(
-      /Blocked path outside allowed directories/,
+      /Blocked path outside user directory/,
     );
 
     await harness.shutdown();

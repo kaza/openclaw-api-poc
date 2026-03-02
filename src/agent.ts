@@ -14,6 +14,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import type { HarnessConfig } from "./config.js";
 import { buildSystemPrompt } from "./system-prompt.js";
+import { DEFAULT_ALLOWED_BASH_COMMANDS } from "./security/defaults.js";
 import { OpenAIEmbeddingClient } from "./memory/embeddings.js";
 import { MemoryStore } from "./memory/store.js";
 import { MemorySearchService } from "./memory/search.js";
@@ -24,6 +25,7 @@ import { createTtsTool } from "./tools/tts.js";
 import { CronStore } from "./cron/store.js";
 import { CronScheduler } from "./cron/scheduler.js";
 import { createCronTools } from "./tools/cron.js";
+import { bootstrapUserSessionFilesystem } from "./security/session-bootstrap.js";
 import { createSandboxedTools } from "./tools/sandbox.js";
 import { buildUserPaths } from "./user-paths.js";
 
@@ -87,7 +89,6 @@ export class AgentHarness {
   private readonly userSessions = new Map<string, UserSessionContext>();
   private readonly sessionInit = new Map<string, Promise<UserSessionContext>>();
   private readonly sttTool: ToolDefinition;
-  private systemPrompt = "";
 
   constructor(private readonly config: HarnessConfig) {
     this.authStorage = AuthStorage.create(path.join(config.sessions, "auth.json"));
@@ -106,8 +107,6 @@ export class AgentHarness {
   }
 
   async init(): Promise<void> {
-    this.systemPrompt = await buildSystemPrompt(this.config.workspace);
-
     if (!this.config.embedding.apiKey) {
       console.warn("[memory] OPENAI_API_KEY missing, memory indexing disabled");
     }
@@ -216,6 +215,14 @@ export class AgentHarness {
     await mkdir(paths.audioDir, { recursive: true });
     await mkdir(paths.uploadsDir, { recursive: true });
 
+    const allowedCommands = this.config.security?.allowedCommands?.length
+      ? this.config.security.allowedCommands
+      : [...DEFAULT_ALLOWED_BASH_COMMANDS];
+
+    await bootstrapUserSessionFilesystem(this.config.workspace, paths.rootDir, allowedCommands);
+
+    const systemPrompt = await buildSystemPrompt(paths.rootDir);
+
     const model = getModel(this.config.llm.provider as never, this.config.llm.model as never);
     if (!model) {
       throw new Error(`Unknown model ${this.config.llm.provider}/${this.config.llm.model}`);
@@ -227,7 +234,7 @@ export class AgentHarness {
     const memorySearch = new MemorySearchService(memoryStore, this.embeddingClient);
     const memoryIndexer = this.config.embedding.apiKey
       ? new MemoryIndexer(memoryStore, this.embeddingClient, {
-          workspaceDir: this.config.workspace,
+          workspaceDir: paths.rootDir,
           watchIntervalMs: this.config.memory?.watchIntervalMs ?? 10_000,
         })
       : null;
@@ -264,9 +271,9 @@ export class AgentHarness {
         userTtsTool,
       ];
 
-      const sessionManager = SessionManager.continueRecent(this.config.workspace, paths.sessionDir);
+      const sessionManager = SessionManager.continueRecent(paths.rootDir, paths.sessionDir);
       const { session } = await createAgentSession({
-        cwd: this.config.workspace,
+        cwd: paths.rootDir,
         model,
         thinkingLevel: this.config.llm.thinkingLevel ?? "high",
         sessionManager,
@@ -274,11 +281,10 @@ export class AgentHarness {
         authStorage: this.authStorage,
         tools: createSandboxedTools({
           userDir: paths.rootDir,
-          workspaceDir: this.config.workspace,
-          allowedCommands: this.config.security?.allowedCommands,
+          allowedCommands,
         }),
         customTools,
-        resourceLoader: createStaticResourceLoader(this.systemPrompt),
+        resourceLoader: createStaticResourceLoader(systemPrompt),
       });
 
       return {

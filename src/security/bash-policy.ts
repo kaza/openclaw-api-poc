@@ -10,6 +10,7 @@ const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=.*/;
 export interface BashValidationOptions {
   allowedCommands: readonly string[];
   userDir: string;
+  binDir: string;
 }
 
 function tokenizeCommand(input: string): string[] {
@@ -191,6 +192,7 @@ export function validateBashCommand(command: string, options: BashValidationOpti
 
 export function createWhitelistedBashOperations(options: BashValidationOptions): BashOperations {
   const userDir = path.resolve(options.userDir);
+  const binDir = path.resolve(options.binDir);
 
   return {
     exec: async (command, _cwd, execOptions) => {
@@ -200,10 +202,11 @@ export function createWhitelistedBashOperations(options: BashValidationOptions):
         const env = {
           ...process.env,
           ...execOptions.env,
-          PATH: execOptions.env?.PATH ?? "/usr/bin:/bin",
+          PATH: binDir,
+          HOME: userDir,
         };
 
-        const child = spawn("/bin/bash", ["-lc", command], {
+        const child = spawn("/bin/bash", ["--noprofile", "--norc", "-c", command], {
           cwd: userDir,
           env,
           stdio: ["ignore", "pipe", "pipe"],

@@ -18,22 +18,17 @@ import { validatePath } from "../security/path-validation.js";
 
 export interface SandboxedToolsOptions {
   userDir: string;
-  workspaceDir: string;
   allowedCommands?: string[];
 }
 
 export function createSandboxedTools(options: SandboxedToolsOptions): AgentTool<any>[] {
   const userDir = path.resolve(options.userDir);
-  const workspaceDir = path.resolve(options.workspaceDir);
   const allowedCommands = options.allowedCommands?.length
     ? options.allowedCommands
     : [...DEFAULT_ALLOWED_BASH_COMMANDS];
 
-  const readOnlyPath = (requestedPath: string): string =>
-    validatePath(requestedPath, userDir, workspaceDir, false);
-
-  const writablePath = (requestedPath: string): string =>
-    validatePath(requestedPath, userDir, workspaceDir, true);
+  const readOnlyPath = (requestedPath: string): string => validatePath(requestedPath, userDir, false);
+  const writablePath = (requestedPath: string): string => validatePath(requestedPath, userDir, true);
 
   const readTool = createReadTool(userDir, {
     operations: {
@@ -147,6 +142,7 @@ export function createSandboxedTools(options: SandboxedToolsOptions): AgentTool<
     operations: createWhitelistedBashOperations({
       allowedCommands,
       userDir,
+      binDir: path.join(userDir, "bin"),
     }),
   });
 

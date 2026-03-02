@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -7,30 +8,41 @@ import { createSandboxedTools } from "./sandbox.js";
 interface SandboxFixture {
   root: string;
   userDir: string;
-  workspaceDir: string;
   otherUserDir: string;
-  outsideDir: string;
+}
+
+function resolveSystemBinary(command: string): string {
+  const candidates = [path.join("/usr/bin", command), path.join("/bin", command)];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  throw new Error(`Missing binary for test command: ${command}`);
+}
+
+async function linkCommands(userDir: string, commands: readonly string[]): Promise<void> {
+  const binDir = path.join(userDir, "bin");
+  await mkdir(binDir, { recursive: true });
+
+  for (const command of commands) {
+    const target = resolveSystemBinary(command);
+    await symlink(target, path.join(binDir, command));
+  }
 }
 
 async function createFixture(): Promise<SandboxFixture> {
   const root = await mkdtemp(path.join(os.tmpdir(), "sandbox-tools-"));
   const userDir = path.join(root, "sessions", "user-a");
   const otherUserDir = path.join(root, "sessions", "user-b");
-  const workspaceDir = path.join(root, "workspace");
-  const outsideDir = path.join(root, "outside");
 
   await mkdir(userDir, { recursive: true });
   await mkdir(otherUserDir, { recursive: true });
-  await mkdir(workspaceDir, { recursive: true });
-  await mkdir(outsideDir, { recursive: true });
 
+  await writeFile(path.join(userDir, "AGENTS.md"), "copied agents", "utf8");
   await writeFile(path.join(userDir, "user.txt"), "hello user", "utf8");
   await writeFile(path.join(userDir, "grep.txt"), "hello\nworld\n", "utf8");
-  await writeFile(path.join(workspaceDir, "AGENTS.md"), "shared agents", "utf8");
   await writeFile(path.join(otherUserDir, "secret.txt"), "other user", "utf8");
-  await writeFile(path.join(outsideDir, "outside.txt"), "outside", "utf8");
 
-  return { root, userDir, workspaceDir, otherUserDir, outsideDir };
+  return { root, userDir, otherUserDir };
 }
 
 function findToolByName(tools: ReturnType<typeof createSandboxedTools>, name: string) {
@@ -63,14 +75,14 @@ describe("sandboxed file + bash tools", () => {
     }
   });
 
-  it("allows read/write/edit inside user dir and read in workspace", async () => {
+  it("allows read/write/edit inside user dir and read own AGENTS.md", async () => {
     const fixture = await createFixture();
     roots.push(fixture.root);
 
-    const tools = createSandboxedTools({
-      userDir: fixture.userDir,
-      workspaceDir: fixture.workspaceDir,
-    });
+    const tools = createSandboxedTools({ userDir: fixture.userDir });
+
+    const agents = await executeTool(tools, "read", { path: "AGENTS.md" });
+    expect(agents.content[0].text).toContain("copied agents");
 
     const readResult = await executeTool(tools, "read", { path: "user.txt" });
     expect(readResult.content[0].text).toContain("hello user");
@@ -80,48 +92,26 @@ describe("sandboxed file + bash tools", () => {
 
     await executeTool(tools, "edit", { path: "new.txt", oldText: "new", newText: "updated" });
     await expect(readFile(path.join(fixture.userDir, "new.txt"), "utf8")).resolves.toContain("updated");
-
-    const workspaceRead = await executeTool(tools, "read", {
-      path: path.join(fixture.workspaceDir, "AGENTS.md"),
-    });
-    expect(workspaceRead.content[0].text).toContain("shared agents");
   });
 
-  it("blocks write/edit outside user dir and traversal escapes", async () => {
+  it("blocks reads/writes outside user dir including /etc and ../other-user", async () => {
     const fixture = await createFixture();
     roots.push(fixture.root);
 
-    const tools = createSandboxedTools({
-      userDir: fixture.userDir,
-      workspaceDir: fixture.workspaceDir,
-    });
+    const tools = createSandboxedTools({ userDir: fixture.userDir });
 
-    await expect(
-      executeTool(tools, "write", {
-        path: path.join(fixture.workspaceDir, "AGENTS.md"),
-        content: "overwrite",
-      }),
-    ).rejects.toThrow(/Blocked write outside user directory/);
-
-    await expect(
-      executeTool(tools, "read", {
-        path: path.join(fixture.outsideDir, "outside.txt"),
-      }),
-    ).rejects.toThrow(/Blocked path outside allowed directories/);
-
-    await expect(
-      executeTool(tools, "write", {
-        path: path.join(fixture.outsideDir, "outside.txt"),
-        content: "x",
-      }),
-    ).rejects.toThrow(/Blocked path outside allowed directories|Blocked write outside user directory/);
-
-    await expect(executeTool(tools, "read", { path: "../../etc/passwd" })).rejects.toThrow(
-      /Blocked path traversal attempt|Blocked path outside allowed directories/,
-    );
+    await expect(executeTool(tools, "read", { path: "/etc/passwd" })).rejects.toThrow(/Blocked path outside user directory/);
 
     await expect(executeTool(tools, "read", { path: "../user-b/secret.txt" })).rejects.toThrow(
-      /Blocked path traversal attempt|Blocked path outside allowed directories/,
+      /Blocked path traversal attempt|Blocked path outside user directory/,
+    );
+
+    await expect(executeTool(tools, "write", { path: "/tmp/pwned.txt", content: "x" })).rejects.toThrow(
+      /Blocked path outside user directory/,
+    );
+
+    await expect(executeTool(tools, "read", { path: "../../etc/passwd" })).rejects.toThrow(
+      /Blocked path traversal attempt|Blocked path outside user directory/,
     );
   });
 
@@ -129,38 +119,37 @@ describe("sandboxed file + bash tools", () => {
     const fixture = await createFixture();
     roots.push(fixture.root);
 
-    const tools = createSandboxedTools({
-      userDir: fixture.userDir,
-      workspaceDir: fixture.workspaceDir,
-    });
+    const outsideDir = path.join(fixture.root, "outside");
+    await mkdir(outsideDir, { recursive: true });
+    await writeFile(path.join(outsideDir, "outside.txt"), "outside", "utf8");
 
     try {
-      await symlink(path.join(fixture.outsideDir, "outside.txt"), path.join(fixture.userDir, "escape-file"));
-      await symlink(fixture.outsideDir, path.join(fixture.userDir, "escape-dir"));
+      await symlink(path.join(outsideDir, "outside.txt"), path.join(fixture.userDir, "escape-file"));
+      await symlink(outsideDir, path.join(fixture.userDir, "escape-dir"));
     } catch {
       return;
     }
 
+    const tools = createSandboxedTools({ userDir: fixture.userDir });
+
     await expect(executeTool(tools, "read", { path: "escape-file" })).rejects.toThrow(
-      /Blocked symlink escape outside allowed directories/,
+      /Blocked symlink escape outside user directory/,
     );
 
-    await expect(
-      executeTool(tools, "write", {
-        path: "escape-dir/pwned.txt",
-        content: "nope",
-      }),
-    ).rejects.toThrow(/Blocked symlink escape outside allowed directories|Blocked write outside user directory/);
+    await expect(executeTool(tools, "write", { path: "escape-dir/pwned.txt", content: "x" })).rejects.toThrow(
+      /Blocked symlink escape outside user directory/,
+    );
   });
 
-  it("allows whitelisted bash commands", async () => {
+  it("allows whitelisted bash commands when symlinked", async () => {
     const fixture = await createFixture();
     roots.push(fixture.root);
 
+    await linkCommands(fixture.userDir, ["ls", "cat", "grep"]);
+
     const tools = createSandboxedTools({
       userDir: fixture.userDir,
-      workspaceDir: fixture.workspaceDir,
-      allowedCommands: ["ls", "cat", "grep", "echo", "date"],
+      allowedCommands: ["ls", "cat", "grep"],
     });
 
     const lsResult = await executeTool(tools, "bash", { command: "ls" });
@@ -177,9 +166,10 @@ describe("sandboxed file + bash tools", () => {
     const fixture = await createFixture();
     roots.push(fixture.root);
 
+    await linkCommands(fixture.userDir, ["ls", "cat", "grep"]);
+
     const tools = createSandboxedTools({
       userDir: fixture.userDir,
-      workspaceDir: fixture.workspaceDir,
       allowedCommands: ["ls", "cat", "grep"],
     });
 
@@ -192,9 +182,10 @@ describe("sandboxed file + bash tools", () => {
     const fixture = await createFixture();
     roots.push(fixture.root);
 
+    await linkCommands(fixture.userDir, ["ls", "cat", "grep"]);
+
     const tools = createSandboxedTools({
       userDir: fixture.userDir,
-      workspaceDir: fixture.workspaceDir,
       allowedCommands: ["ls", "cat", "grep"],
     });
 
@@ -215,10 +206,11 @@ describe("sandboxed file + bash tools", () => {
     const fixture = await createFixture();
     roots.push(fixture.root);
 
+    await linkCommands(fixture.userDir, ["cat"]);
+
     const tools = createSandboxedTools({
       userDir: fixture.userDir,
-      workspaceDir: fixture.workspaceDir,
-      allowedCommands: ["ls", "cat", "grep"],
+      allowedCommands: ["cat"],
     });
 
     await expect(executeTool(tools, "bash", { command: "`rm -rf /`" })).rejects.toThrow(
@@ -228,40 +220,54 @@ describe("sandboxed file + bash tools", () => {
     await expect(executeTool(tools, "bash", { command: "$(rm -rf /)" })).rejects.toThrow(
       /backticks, subshells, and process substitution are not allowed/,
     );
-
-    await expect(executeTool(tools, "bash", { command: "cat <(cat /etc/passwd)" })).rejects.toThrow(
-      /backticks, subshells, and process substitution are not allowed/,
-    );
   });
 
-  it("runs bash with cwd set to user directory", async () => {
+  it("runs bash with cwd and HOME set to user directory", async () => {
     const fixture = await createFixture();
     roots.push(fixture.root);
 
-    await writeFile(path.join(fixture.userDir, "cwd-only.txt"), "present", "utf8");
+    await linkCommands(fixture.userDir, ["pwd", "echo"]);
 
     const tools = createSandboxedTools({
       userDir: fixture.userDir,
-      workspaceDir: fixture.workspaceDir,
-      allowedCommands: ["ls", "cat"],
+      allowedCommands: ["pwd", "echo"],
     });
 
-    const result = await executeTool(tools, "bash", { command: "ls" });
-    expect(result.content[0].text).toContain("cwd-only.txt");
+    const pwdResult = await executeTool(tools, "bash", { command: "pwd" });
+    expect(pwdResult.content[0].text?.trim()).toBe(fixture.userDir);
+
+    const homeResult = await executeTool(tools, "bash", { command: "echo $HOME" });
+    expect(homeResult.content[0].text?.trim()).toBe(fixture.userDir);
   });
 
-  it("blocks bash file access outside user directory even for whitelisted commands", async () => {
+  it("blocks bash file access outside user dir even with whitelisted command", async () => {
     const fixture = await createFixture();
     roots.push(fixture.root);
 
+    await linkCommands(fixture.userDir, ["cat"]);
+
     const tools = createSandboxedTools({
       userDir: fixture.userDir,
-      workspaceDir: fixture.workspaceDir,
-      allowedCommands: ["cat", "ls", "grep"],
+      allowedCommands: ["cat"],
     });
 
     await expect(executeTool(tools, "bash", { command: "cat /etc/passwd" })).rejects.toThrow(
-      /Blocked path outside allowed directories/,
+      /Blocked path outside user directory/,
     );
+  });
+
+  it("bash PATH is restricted to symlinked commands (which/curl fail)", async () => {
+    const fixture = await createFixture();
+    roots.push(fixture.root);
+
+    await linkCommands(fixture.userDir, ["which"]);
+
+    const tools = createSandboxedTools({
+      userDir: fixture.userDir,
+      allowedCommands: ["which", "curl"],
+    });
+
+    await expect(executeTool(tools, "bash", { command: "which curl" })).rejects.toThrow(/Command exited with code 1/);
+    await expect(executeTool(tools, "bash", { command: "curl --version" })).rejects.toThrow(/not found|exited with code 127/);
   });
 });

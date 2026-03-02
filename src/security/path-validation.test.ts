@@ -8,7 +8,6 @@ interface TestDirs {
   root: string;
   userDir: string;
   otherUserDir: string;
-  workspaceDir: string;
   outsideDir: string;
 }
 
@@ -16,20 +15,17 @@ async function setupDirs(): Promise<TestDirs> {
   const root = await mkdtemp(path.join(os.tmpdir(), "path-validation-"));
   const userDir = path.join(root, "sessions", "user-a");
   const otherUserDir = path.join(root, "sessions", "user-b");
-  const workspaceDir = path.join(root, "workspace");
   const outsideDir = path.join(root, "outside");
 
   await mkdir(userDir, { recursive: true });
   await mkdir(otherUserDir, { recursive: true });
-  await mkdir(workspaceDir, { recursive: true });
   await mkdir(outsideDir, { recursive: true });
 
   await writeFile(path.join(userDir, "notes.txt"), "user notes", "utf8");
   await writeFile(path.join(otherUserDir, "memory.db"), "secret", "utf8");
-  await writeFile(path.join(workspaceDir, "AGENTS.md"), "workspace", "utf8");
   await writeFile(path.join(outsideDir, "outside.txt"), "outside", "utf8");
 
-  return { root, userDir, otherUserDir, workspaceDir, outsideDir };
+  return { root, userDir, otherUserDir, outsideDir };
 }
 
 describe("validatePath", () => {
@@ -47,7 +43,7 @@ describe("validatePath", () => {
     const dirs = await setupDirs();
     roots.push(dirs.root);
 
-    const resolved = validatePath("notes.txt", dirs.userDir, dirs.workspaceDir, false);
+    const resolved = validatePath("notes.txt", dirs.userDir, false);
     expect(resolved).toBe(path.join(dirs.userDir, "notes.txt"));
   });
 
@@ -55,7 +51,7 @@ describe("validatePath", () => {
     const dirs = await setupDirs();
     roots.push(dirs.root);
 
-    const resolved = validatePath("new.txt", dirs.userDir, dirs.workspaceDir, true);
+    const resolved = validatePath("new.txt", dirs.userDir, true);
     expect(resolved).toBe(path.join(dirs.userDir, "new.txt"));
   });
 
@@ -63,63 +59,36 @@ describe("validatePath", () => {
     const dirs = await setupDirs();
     roots.push(dirs.root);
 
-    const resolved = validatePath("notes.txt", dirs.userDir, dirs.workspaceDir, true);
+    const resolved = validatePath("notes.txt", dirs.userDir, true);
     expect(resolved).toBe(path.join(dirs.userDir, "notes.txt"));
   });
 
-  it("allows reading files inside workspace directory", async () => {
+  it("blocks reading absolute paths outside user directory", async () => {
     const dirs = await setupDirs();
     roots.push(dirs.root);
 
-    const workspaceFile = path.join(dirs.workspaceDir, "AGENTS.md");
-    const resolved = validatePath(workspaceFile, dirs.userDir, dirs.workspaceDir, false);
-    expect(resolved).toBe(workspaceFile);
+    expect(() => validatePath("/etc/passwd", dirs.userDir, false)).toThrow(/Blocked path outside user directory/);
   });
 
-  it("blocks writing files inside workspace directory", async () => {
+  it("blocks writing absolute paths outside user directory", async () => {
     const dirs = await setupDirs();
     roots.push(dirs.root);
 
-    const workspaceFile = path.join(dirs.workspaceDir, "AGENTS.md");
-    expect(() => validatePath(workspaceFile, dirs.userDir, dirs.workspaceDir, true)).toThrow(
-      /Blocked write outside user directory/,
-    );
-  });
-
-  it("blocks reading absolute paths outside allowed directories", async () => {
-    const dirs = await setupDirs();
-    roots.push(dirs.root);
-
-    expect(() => validatePath("/etc/passwd", dirs.userDir, dirs.workspaceDir, false)).toThrow(
-      /Blocked path outside allowed directories/,
-    );
-  });
-
-  it("blocks writing absolute paths outside allowed directories", async () => {
-    const dirs = await setupDirs();
-    roots.push(dirs.root);
-
-    expect(() => validatePath("/etc/passwd", dirs.userDir, dirs.workspaceDir, true)).toThrow(
-      /Blocked path outside allowed directories|Blocked write outside user directory/,
-    );
+    expect(() => validatePath("/etc/passwd", dirs.userDir, true)).toThrow(/Blocked path outside user directory/);
   });
 
   it("blocks traversal attacks to system files", async () => {
     const dirs = await setupDirs();
     roots.push(dirs.root);
 
-    expect(() => validatePath("../../etc/passwd", dirs.userDir, dirs.workspaceDir, false)).toThrow(
-      /Blocked path traversal attempt/,
-    );
+    expect(() => validatePath("../../etc/passwd", dirs.userDir, false)).toThrow(/Blocked path traversal attempt/);
   });
 
   it("blocks traversal attacks to other users", async () => {
     const dirs = await setupDirs();
     roots.push(dirs.root);
 
-    expect(() => validatePath("../user-b/memory.db", dirs.userDir, dirs.workspaceDir, false)).toThrow(
-      /Blocked path traversal attempt/,
-    );
+    expect(() => validatePath("../user-b/memory.db", dirs.userDir, false)).toThrow(/Blocked path traversal attempt/);
   });
 
   it("blocks symlink escapes", async () => {
@@ -137,12 +106,10 @@ describe("validatePath", () => {
       return;
     }
 
-    expect(() => validatePath("escape-file", dirs.userDir, dirs.workspaceDir, false)).toThrow(
-      /Blocked symlink escape outside allowed directories/,
-    );
+    expect(() => validatePath("escape-file", dirs.userDir, false)).toThrow(/Blocked symlink escape outside user directory/);
 
-    expect(() => validatePath("escape-dir/created.txt", dirs.userDir, dirs.workspaceDir, true)).toThrow(
-      /Blocked symlink escape outside allowed directories|Blocked write outside user directory/,
+    expect(() => validatePath("escape-dir/created.txt", dirs.userDir, true)).toThrow(
+      /Blocked symlink escape outside user directory/,
     );
   });
 });
