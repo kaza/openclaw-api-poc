@@ -181,13 +181,15 @@ OpenClaw's cron system (17K lines) handles isolated agent sessions, delivery rou
 
 ### 4. Speech-to-Text (STT)
 
-**Source:** Thin API wrappers over existing cloud services.
+**Source:** Internal agent tool wrapping cloud STT services. **Not exposed as an API** — the agent handles transcription internally when it receives an audio file.
 
 **Supported providers:**
 - **OpenAI Whisper:** `POST https://api.openai.com/v1/audio/transcriptions`
 - **ElevenLabs Scribe:** `POST https://api.elevenlabs.io/v1/speech-to-text` (alternative)
 
 **Agent tool:** `transcribe(audioFilePath, language?)` → returns transcript text
+
+**How it works:** When the WebUI uploads an OGG file via `/chat/stream` (multipart), the server saves it to a temp path and passes the file reference to the agent. The agent then uses the `transcribe` tool internally to convert speech to text before processing the message.
 
 **Configuration:** Provider selection + API key in config. User can add custom STT providers by implementing a simple interface.
 
@@ -214,18 +216,29 @@ OpenClaw's cron system (17K lines) handles isolated agent sessions, delivery rou
 **Endpoints:**
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/chat` | Send message, receive full response |
-| `POST` | `/chat/stream` | Send message, receive SSE stream |
-| `POST` | `/transcribe` | Upload audio, receive transcript |
-| `GET`  | `/sessions` | List active sessions |
-| `DELETE` | `/sessions/:id` | Clear a session |
+| `POST` | `/chat` | Send message (text or multipart with audio), receive full response |
+| `POST` | `/chat/stream` | Send message (text or multipart with audio), receive SSE stream |
 | `GET` | `/health` | Health check |
 
-**Session routing:** User ID in request → maps to session file. One user = one persistent JSONL session.
+**Removed endpoints (not needed):**
+- ~~`POST /transcribe`~~ — STT is an internal agent tool, not an API. The WebUI sends audio as a multipart attachment to `/chat` or `/chat/stream`, and the agent transcribes it internally.
+- ~~`GET /sessions`~~ — App manages its own session references via user IDs.
+- ~~`DELETE /sessions/:id`~~ — Not needed for v1.
+
+**Voice input flow:**
+```
+WebUI → record audio → POST /chat/stream (multipart: audio file + user ID)
+  → Server saves OGG to temp path → passes file path to agent session
+  → Agent uses internal `transcribe` tool → processes transcript → streams response back
+```
+
+The audio upload uses **multipart/form-data** — the simplest approach for sending binary + metadata in one request.
+
+**Session routing:** User ID in request → maps to session file. One user = one persistent JSONL session. Sessions are created automatically on first message (upsert pattern).
 
 **Authentication:** Bearer token (configurable). Simple but sufficient for internal/enterprise use.
 
-**Effort:** 150–200 lines. 1 day.
+**Effort:** 100–150 lines. 1 day.
 
 ### 7. System Prompt Builder
 
@@ -362,10 +375,10 @@ These can be added incrementally without architectural changes:
 
 - **Web search tool** — API wrapper around Brave/Google/Perplexity
 - **Image analysis tool** — Vision model API calls
-- **File upload handling** — Accept files via HTTP, make available to agent
 - **WebSocket streaming** — Real-time bidirectional communication
 - **Multi-model failover** — Try provider B if provider A fails
 - **Conversation export** — HTML/PDF export of session history
+- **Session management API** — List/delete sessions if needed later
 
 ---
 
