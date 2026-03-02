@@ -369,4 +369,114 @@ These can be added incrementally without architectural changes:
 
 ---
 
+## Reference Repositories
+
+This project is a simplified, enterprise-focused subset of [OpenClaw](https://github.com/openclaw/openclaw), built directly on the [pi-mono](https://github.com/badlogic/pi-mono) SDK that powers it. Both repositories are fully open source (MIT) and serve as reference implementations.
+
+### pi-mono — The Agent Engine
+
+**Repository:** https://github.com/badlogic/pi-mono
+
+The core SDK we build on. These are the key files to understand:
+
+| File | What It Does |
+|---|---|
+| `packages/coding-agent/src/core/sdk.ts` | `createAgentSession()` — main entry point. Shows full API: model setup, tool registration, session management, resource loading |
+| `packages/coding-agent/src/core/agent-session.ts` | `AgentSession` class — event system (`on("message_update")`), `prompt()`, compaction, model switching |
+| `packages/coding-agent/src/core/session-manager.ts` | `SessionManager` — JSONL persistence, branching, session context building |
+| `packages/coding-agent/src/core/tools/index.ts` | Built-in tools (read, write, edit, bash, grep, find, ls) + `createCodingTools()` factory |
+| `packages/coding-agent/src/core/tools/bash.ts` | Example of a full tool implementation — TypeBox schema, execute function, result formatting |
+| `packages/coding-agent/src/core/resource-loader.ts` | How AGENTS.md / CLAUDE.md files are discovered and loaded into context |
+| `packages/coding-agent/src/core/compaction/index.ts` | Session compaction (context window management) |
+| `packages/coding-agent/src/core/system-prompt.ts` | How the system prompt is built from tools + context files + skills |
+| `packages/agent/src/types.ts` | `AgentLoopConfig`, `AgentTool` interface — the contract for custom tools |
+| `packages/ai/src/index.ts` | `streamSimple()`, `getModel()` — LLM abstraction layer |
+
+**Custom tool interface (from pi-agent-core):**
+
+```typescript
+import { Type, type Static } from "@sinclair/typebox";
+import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
+
+const MyToolSchema = Type.Object({
+  query: Type.String({ description: "Search query" }),
+  limit: Type.Optional(Type.Number({ description: "Max results" })),
+});
+
+const myTool: AgentTool<typeof MyToolSchema> = {
+  name: "my_tool",
+  description: "Does something useful",
+  schema: MyToolSchema,
+  async execute(params: Static<typeof MyToolSchema>): Promise<AgentToolResult> {
+    const result = await doSomething(params.query, params.limit ?? 10);
+    return { resultForAssistant: JSON.stringify(result) };
+  },
+};
+```
+
+### OpenClaw — Reference Implementations
+
+**Repository:** https://github.com/openclaw/openclaw
+
+OpenClaw is a full-featured multi-channel AI gateway (~100K lines TypeScript). We use it as a reference for the specific subsystems we're reimplementing in simplified form. Navigate freely — the full codebase is available — but these are the most relevant starting points:
+
+#### Memory System (`src/memory/`)
+
+| File | What to Learn |
+|---|---|
+| `src/memory/manager.ts` | Main memory manager — search orchestration, hybrid merge logic |
+| `src/memory/sqlite-vec.ts` | How to load the sqlite-vec extension with `node:sqlite` |
+| `src/memory/sqlite.ts` | `node:sqlite` initialization pattern |
+| `src/memory/embeddings-openai.ts` | OpenAI embedding API wrapper (batching, error handling) |
+| `src/memory/hybrid.ts` | BM25 + vector score merging algorithm |
+| `src/memory/mmr.ts` | Maximal Marginal Relevance reranking (optional, nice-to-have) |
+| `src/memory/temporal-decay.ts` | Time-based score decay (optional) |
+| `src/memory/session-files.ts` | How session JSONL files are indexed into memory |
+| `src/agents/tools/memory-tool.ts` | `memory_search` and `memory_get` tool definitions — schema, execute, result formatting |
+
+#### Cron / Scheduling (`src/cron/`)
+
+| File | What to Learn |
+|---|---|
+| `src/cron/service.ts` | Main cron service — job lifecycle, scheduling |
+| `src/cron/service/store.ts` | JSON-based job persistence |
+| `src/cron/service/timer.ts` | croner integration pattern |
+| `src/cron/types.ts` | Job schema: schedule types (at, every, cron), payloads |
+| `src/cron/store.ts` | Low-level store operations |
+| `src/agents/tools/cron-tool.ts` | `cron` agent tool — add/list/remove/run interface |
+
+#### Voice (TTS / STT)
+
+| File | What to Learn |
+|---|---|
+| `src/agents/tools/tts-tool.ts` | TTS tool definition and execution |
+| `src/tts/tts.ts` | TTS provider abstraction |
+| `src/media-understanding/providers/openai/` | OpenAI Whisper STT integration |
+
+#### System Prompt & Bootstrap
+
+| File | What to Learn |
+|---|---|
+| `src/agents/workspace.ts` | How workspace files (AGENTS.md, SOUL.md, TOOLS.md, etc.) are discovered and loaded |
+| `src/agents/bootstrap-files.ts` | Bootstrap file resolution for agent runs |
+| `src/agents/system-prompt.ts` | Full system prompt builder — `buildAgentSystemPrompt()` |
+| `src/agents/pi-embedded-runner/run/attempt.ts` | How OpenClaw creates an embedded pi session with custom tools |
+
+#### Tool Patterns
+
+| File | What to Learn |
+|---|---|
+| `src/agents/pi-tools.ts` | `createOpenClawCodingTools()` — how tools are assembled and injected |
+| `src/agents/tools/web-fetch.ts` | Example of a well-structured custom tool with validation |
+| `src/agents/tools/web-search.ts` | Another clean tool example with provider abstraction |
+
+### How to Use These References
+
+1. **Start with pi-mono's `sdk.ts`** — understand `createAgentSession()` and the tool interface
+2. **Look at OpenClaw's tool implementations** when building each module — they show battle-tested patterns
+3. **Don't copy-paste** — OpenClaw's tools are tightly coupled to its config system, session routing, and plugin hooks. Extract the logic patterns, implement with our simpler architecture
+4. **Navigate freely** — both repos are fully available. When you need to understand how something works deeper, follow the imports
+
+---
+
 *This document serves as the architectural decision record and implementation plan. It will be updated as the project evolves.*
