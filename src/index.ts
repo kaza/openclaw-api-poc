@@ -66,8 +66,9 @@ app.post("/chat", upload.single("audio"), async (req, res) => {
   const audioFilePath = req.file?.path;
 
   try {
-    const userId = parseUserId(req.body as Record<string, unknown>);
-    const message = parseMessage(req.body as Record<string, unknown>);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const userId = parseUserId(body);
+    const message = parseMessage(body);
 
     if (!message && !audioFilePath) {
       return res.status(400).json({ error: "Provide message text or an audio upload" });
@@ -93,8 +94,9 @@ app.post("/chat/stream", upload.single("audio"), async (req, res) => {
   });
 
   try {
-    const userId = parseUserId(req.body as Record<string, unknown>);
-    const message = parseMessage(req.body as Record<string, unknown>);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const userId = parseUserId(body);
+    const message = parseMessage(body);
 
     if (!message && !audioFilePath) {
       return res.status(400).json({ error: "Provide message text or an audio upload" });
