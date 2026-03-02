@@ -1,0 +1,30 @@
+{
+  "llm": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-20250514",
+    "apiKey": "${ANTHROPIC_API_KEY}",
+    "thinkingLevel": "high"
+  },
+  "embedding": {
+    "provider": "openai",
+    "model": "text-embedding-3-small",
+    "apiKey": "${OPENAI_API_KEY}"
+  },
+  "tts": {
+    "provider": "elevenlabs",
+    "voiceId": "XrExE9yKIg1WjnnlVkGX",
+    "model": "eleven_multilingual_v2",
+    "apiKey": "${ELEVENLABS_API_KEY}"
+  },
+  "stt": {
+    "provider": "openai",
+    "model": "whisper-1",
+    "apiKey": "${OPENAI_API_KEY}"
+  },
+  "server": {
+    "port": 3000,
+    "token": "${AGENT_API_TOKEN}"
+  },
+  "workspace": "./workspace",
+  "sessions": "./sessions"
+}
