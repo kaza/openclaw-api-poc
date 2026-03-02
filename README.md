@@ -1,66 +1,111 @@
-# OpenClaw API POC
+# Lightweight Agent Harness (TypeScript)
 
-Proof of concept: using [OpenClaw](https://github.com/openclaw/openclaw) as an AI execution engine with session routing from a custom web app.
+A self-contained HTTP agent harness built on **pi-mono**:
 
-## What This Proves
+- `@mariozechner/pi-coding-agent`
+- `@mariozechner/pi-ai`
+- `@mariozechner/pi-agent-core`
 
-OpenClaw handles all the AI complexity (model calls, session memory, tool access, context management). Your app just sends messages to the right session.
+This project implements the architecture from `ARCHITECTURE.md` with:
 
+- Core agent runtime + persistent per-user sessions
+- HTTP API (`/chat`, `/chat/stream`, `/health`)
+- Vector memory (SQLite + sqlite-vec + FTS5)
+- Cron scheduling (`croner`) with persistence
+- STT tool (OpenAI or ElevenLabs)
+- TTS tool (OpenAI or ElevenLabs)
+- System prompt builder from workspace files
+- JSON config with `${ENV_VAR}` secret resolution
+
+## Requirements
+
+- Node.js **22+**
+- API keys (depending on enabled providers)
+
+## Install
+
+```bash
+npm install
 ```
-[Your Web App] → POST /v1/responses → [OpenClaw Gateway] → [Agent + Session + Memory]
+
+## Configure
+
+Edit `config.json` (defaults are included) and/or set environment variables:
+
+- `ANTHROPIC_API_KEY`
+- `OPENAI_API_KEY`
+- `ELEVENLABS_API_KEY`
+- `AGENT_API_TOKEN`
+
+## Run
+
+```bash
+# dev
+npm run dev
+
+# compile
+npm run build
+
+# run compiled
+npm start
 ```
 
-## Quick Start
+## API
 
-1. **Enable the OpenResponses endpoint** in your OpenClaw config (`openclaw.json`):
+### `GET /health`
+
+Returns service health.
+
+### `POST /chat`
+
+JSON:
 
 ```json
 {
-  "gateway": {
-    "http": {
-      "endpoints": {
-        "responses": { "enabled": true }
-      }
-    }
-  }
+  "userId": "alice",
+  "message": "What's on my schedule today?"
 }
 ```
 
-2. **Restart the gateway:**
+Multipart (audio + optional text):
 
-```bash
-openclaw gateway restart
+- `userId` (field)
+- `message` (field, optional)
+- `audio` (file, optional)
+
+### `POST /chat/stream`
+
+Same payload as `/chat`, response is SSE with events:
+
+- `delta`
+- `done`
+- `error`
+
+## Project Structure
+
+```text
+src/
+  index.ts            # HTTP server
+  agent.ts            # session runtime and routing
+  config.ts           # config + env resolution
+  system-prompt.ts    # AGENTS/TOOLS/MEMORY prompt builder
+  tools/
+    memory.ts
+    cron.ts
+    stt.ts
+    tts.ts
+  memory/
+    store.ts
+    embeddings.ts
+    indexer.ts
+    search.ts
+  cron/
+    store.ts
+    scheduler.ts
 ```
 
-3. **Serve the app** (any static HTTP server):
+## Notes
 
-```bash
-npx serve .
-# or
-python3 -m http.server 3000
-```
-
-4. **Open** `http://localhost:3000` and configure:
-   - Gateway URL (default: `http://localhost:18789`)
-   - Gateway Token (your `OPENCLAW_GATEWAY_TOKEN`)
-   - Agent ID (e.g., `main`)
-
-5. **Test session routing:**
-   - Set User ID to "Alice" → send "Hi, I'm Alice"
-   - Set User ID to "Bob" → send "Hi, I'm Bob"  
-   - Set User ID to "Alice" → send "What's my name?" → should say "Alice"
-
-## How It Works
-
-- **Session routing**: The `user` field in the API request creates a stable session per user ID
-- **Agent selection**: `model: "openclaw:<agentId>"` routes to the right agent
-- **Memory**: OpenClaw maintains context per session automatically
-- **Streaming**: SSE support for real-time responses
-
-## API Reference
-
-See [OpenClaw OpenResponses API docs](https://docs.openclaw.ai/gateway/openresponses-http-api).
-
-## License
-
-MIT
+- One user ID maps to one persistent session history.
+- Memory indexing is automatically disabled when embedding API key is missing.
+- Old `index.html` and `server.js` are legacy POC artifacts; `src/` + TypeScript is the active implementation.
