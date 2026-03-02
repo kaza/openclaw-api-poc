@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Harness Chat</title>
+  <style>
+    * { box-sizing: border-box; }
+
+    :root {
+      color-scheme: dark;
+      --bg: #0a0a0a;
+      --panel: #141414;
+      --panel-2: #1c1c1c;
+      --line: #2a2a2a;
+      --text: #e6e6e6;
+      --muted: #969696;
+      --accent: #4a9eff;
+      --ok: #2ecc71;
+      --warn: #f39c12;
+      --bad: #e74c3c;
+      --user: #1a3a5c;
+      --assistant: #1e1e1e;
+    }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      padding: 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .field label {
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    input, textarea, button {
+      font: inherit;
+      color: var(--text);
+      background: var(--panel-2);
+      border: 1px solid #353535;
+      border-radius: 8px;
+      padding: 10px 12px;
+      outline: none;
+    }
+
+    input:focus, textarea:focus {
+      border-color: var(--accent);
+    }
+
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 6px;
+      font-size: 13px;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: #666;
+      flex-shrink: 0;
+    }
+
+    .dot.ok { background: var(--ok); }
+    .dot.warn { background: var(--warn); }
+    .dot.bad { background: var(--bad); }
+
+    .meta {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 2px;
+    }
+
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 16px;
+    }
+
+    .message {
+      max-width: min(80%, 800px);
+      padding: 10px 13px;
+      border-radius: 12px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+      border: 1px solid transparent;
+    }
+
+    .message.user {
+      align-self: flex-end;
+      background: var(--user);
+      border-color: #254f7a;
+    }
+
+    .message.agent {
+      align-self: flex-start;
+      background: var(--assistant);
+      border-color: #303030;
+    }
+
+    .message.system {
+      align-self: center;
+      background: transparent;
+      border-color: transparent;
+      color: var(--muted);
+      font-size: 12px;
+      max-width: 90%;
+    }
+
+    .typing::after {
+      content: " ▋";
+      color: var(--accent);
+      animation: blink 0.8s steps(1) infinite;
+    }
+
+    @keyframes blink { 50% { opacity: 0; } }
+
+    .composer {
+      display: flex;
+      gap: 10px;
+      padding: 12px;
+      border-top: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    #messageInput {
+      resize: vertical;
+      min-height: 44px;
+      max-height: 180px;
+      flex: 1;
+    }
+
+    #sendBtn {
+      background: var(--accent);
+      border-color: #3d8be0;
+      color: white;
+      min-width: 96px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    #sendBtn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="field">
+      <label for="tokenInput">Bearer token</label>
+      <input id="tokenInput" type="password" placeholder="paste token" autocomplete="off" />
+    </div>
+
+    <div class="field">
+      <label for="userIdInput">User ID (session key)</label>
+      <input id="userIdInput" type="text" placeholder="e.g. user-123" autocomplete="off" />
+      <div class="meta">Changing user ID clears chat and starts a new session.</div>
+    </div>
+
+    <div class="field">
+      <label>Session</label>
+      <div class="status">
+        <span id="statusDot" class="dot"></span>
+        <span id="statusText">Not connected</span>
+      </div>
+      <div class="meta" id="sessionText">User: -</div>
+    </div>
+  </header>
+
+  <main id="messages"></main>
+
+  <div class="composer">
+    <textarea id="messageInput" placeholder="Type a message and press Enter…"></textarea>
+    <button id="sendBtn">Send</button>
+  </div>
+
+  <script>
+    const STORAGE = {
+      token: "harness_token",
+      userId: "harness_user_id",
+    };
+
+    const tokenInput = document.getElementById("tokenInput");
+    const userIdInput = document.getElementById("userIdInput");
+    const statusDot = document.getElementById("statusDot");
+    const statusText = document.getElementById("statusText");
+    const sessionText = document.getElementById("sessionText");
+    const messagesEl = document.getElementById("messages");
+    const messageInput = document.getElementById("messageInput");
+    const sendBtn = document.getElementById("sendBtn");
+
+    let sending = false;
+
+    tokenInput.value = localStorage.getItem(STORAGE.token) || "";
+    userIdInput.value = localStorage.getItem(STORAGE.userId) || "default-user";
+    updateSessionText();
+
+    tokenInput.addEventListener("input", () => {
+      localStorage.setItem(STORAGE.token, tokenInput.value);
+      healthCheck();
+    });
+
+    userIdInput.addEventListener("change", () => {
+      const next = userIdInput.value.trim() || "default-user";
+      userIdInput.value = next;
+      localStorage.setItem(STORAGE.userId, next);
+      clearMessages();
+      addMessage("system", `Started new session: ${next}`);
+      updateSessionText();
+    });
+
+    messageInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        sendMessage();
+      }
+    });
+
+    sendBtn.addEventListener("click", sendMessage);
+
+    function authHeaders() {
+      const token = tokenInput.value.trim();
+      return {
+        Authorization: `Bearer ${token}`,
+      };
+    }
+
+    function updateSessionText() {
+      const userId = userIdInput.value.trim() || "default-user";
+      sessionText.textContent = `User: ${userId}`;
+    }
+
+    function setStatus(kind, text) {
+      statusDot.className = `dot ${kind || ""}`;
+      statusText.textContent = text;
+    }
+
+    function clearMessages() {
+      messagesEl.innerHTML = "";
+    }
+
+    function addMessage(role, text) {
+      const node = document.createElement("div");
+      node.className = `message ${role}`;
+      node.textContent = text;
+      messagesEl.appendChild(node);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+      return node;
+    }
+
+    async function healthCheck() {
+      try {
+        setStatus("warn", "Checking /health…");
+        const response = await fetch("/health", {
+          method: "GET",
+          headers: {
+            ...authHeaders(),
+          },
+        });
+
+        if (response.ok) {
+          setStatus("ok", "Connected");
+          return;
+        }
+
+        if (response.status === 401 || response.status === 403) {
+          setStatus("bad", "Auth required / invalid token");
+          return;
+        }
+
+        setStatus("bad", `Health failed (${response.status})`);
+      } catch {
+        setStatus("bad", "Server unreachable");
+      }
+    }
+
+    async function sendMessage() {
+      if (sending) return;
+
+      const text = messageInput.value.trim();
+      const userId = userIdInput.value.trim() || "default-user";
+
+      if (!text) return;
+      if (!tokenInput.value.trim()) {
+        addMessage("system", "Set bearer token first.");
+        setStatus("bad", "Missing token");
+        return;
+      }
+
+      sending = true;
+      sendBtn.disabled = true;
+      messageInput.value = "";
+
+      addMessage("user", text);
+      const agentNode = addMessage("agent", "");
+      agentNode.classList.add("typing");
+
+      try {
+        setStatus("warn", "Streaming response…");
+
+        const response = await fetch("/chat/stream", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...authHeaders(),
+          },
+          body: JSON.stringify({
+            userId,
+            message: text,
+          }),
+        });
+
+        if (!response.ok || !response.body) {
+          const body = await response.text();
+          throw new Error(`HTTP ${response.status}: ${body || "request failed"}`);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let full = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const chunks = buffer.split("\n\n");
+          buffer = chunks.pop() || "";
+
+          for (const chunk of chunks) {
+            const lines = chunk.split("\n").map((line) => line.trimEnd());
+            const eventLine = lines.find((line) => line.startsWith("event:"));
+            const dataLine = lines.find((line) => line.startsWith("data:"));
+            if (!dataLine) continue;
+
+            const event = eventLine ? eventLine.slice(6).trim() : "message";
+            const payloadRaw = dataLine.slice(5).trim();
+            let payload;
+            try {
+              payload = JSON.parse(payloadRaw);
+            } catch {
+              continue;
+            }
+
+            if (event === "delta" && typeof payload.delta === "string") {
+              full += payload.delta;
+              agentNode.textContent = full;
+              messagesEl.scrollTop = messagesEl.scrollHeight;
+            } else if (event === "done" && typeof payload.text === "string") {
+              if (!full) {
+                full = payload.text;
+                agentNode.textContent = full;
+              }
+            } else if (event === "error") {
+              throw new Error(payload.error || "stream error");
+            }
+          }
+        }
+
+        if (!full) {
+          agentNode.textContent = "(empty response)";
+        }
+
+        setStatus("ok", "Connected");
+      } catch (error) {
+        agentNode.textContent = `Error: ${error instanceof Error ? error.message : "unknown"}`;
+        setStatus("bad", "Request failed");
+      } finally {
+        agentNode.classList.remove("typing");
+        sending = false;
+        sendBtn.disabled = false;
+        messageInput.focus();
+      }
+    }
+
+    addMessage("system", "Ready. Enter token + user ID, then send a message.");
+    healthCheck();
+    setInterval(healthCheck, 15000);
+  </script>
+</body>
+</html>
