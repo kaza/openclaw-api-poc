@@ -40,6 +40,109 @@ The [pi-mono](https://github.com/badlogic/pi-mono) SDK (by [Mario Zechner](https
 
 This is not a wrapper or a toy — it's the same engine handling production workloads through OpenClaw today.
 
+## Project Goals
+
+1. **Provide a minimal, self-contained AI agent runtime** that can be embedded into any application — no external daemon, no multi-tenant infrastructure, no messaging platform dependencies.
+2. **Persistent, context-aware conversations** — the agent remembers past interactions through session history and long-term vector memory.
+3. **Extensible tool system** — ship with core tools (memory, cron, voice), but make it trivial for developers to add their own.
+4. **Enterprise-friendly** — minimal attack surface, clear dependency tree, no unnecessary network exposure. One process, one config file, predictable behavior.
+5. **Developer experience** — clone, configure API keys, `npm start`, working agent. No complex setup, no infrastructure prerequisites beyond Node.js.
+
+## Design Decisions
+
+Key architectural choices and the reasoning behind them. These are **pragmatic defaults, not sacred decisions** — override any of them if your context demands it.
+
+### Why pi-mono instead of LangChain / Vercel AI SDK / direct API calls?
+
+**Decision:** Use `@mariozechner/pi-coding-agent` + `@mariozechner/pi-ai` as the agent runtime.
+
+**Why:**
+- **Battle-tested in production** — this is the exact engine running OpenClaw, which handles real workloads across Telegram, Discord, WhatsApp, and more. Not a tutorial project.
+- **Complete agent loop** — tool execution, streaming, context window management, auto-compaction, session persistence, model switching. All built-in, all working.
+- **Provider-agnostic** — Anthropic, OpenAI, Google, Bedrock, Ollama, and others through a single `getModel()` call. No vendor lock-in.
+- **Session management included** — `SessionManager` handles JSONL persistence, branching, and compaction. We don't have to build this.
+- **7 built-in coding tools** — read, write, edit, bash, grep, find, ls. The agent can work with files and run commands out of the box.
+
+**Why not LangChain?** Too abstract, too many layers, too much magic. We want to understand every line between the user's message and the LLM call.
+
+**Why not Vercel AI SDK?** Focused on frontend/Next.js integration. We need a backend-first, framework-agnostic runtime.
+
+**Why not raw API calls?** We'd have to build the agent loop, tool execution, streaming, context management, session persistence... That's exactly what pi-mono already provides.
+
+**Override when:** You need a fundamentally different agent architecture (e.g., multi-agent orchestration, graph-based workflows), or you're in a Python shop and TypeScript is a non-starter.
+
+### Why SQLite + sqlite-vec instead of Pinecone / Qdrant / pgvector?
+
+**Decision:** Use `node:sqlite` (Node 22 built-in) + `sqlite-vec` extension for vector storage and search.
+
+**Why:**
+- **Zero infrastructure** — no database server to run, no cloud service to pay for. Single file on disk.
+- **Zero dependencies** — `node:sqlite` is built into Node 22+. `sqlite-vec` is a single native extension.
+- **Good enough performance** — for single-user workloads with thousands of chunks, SQLite vector search is sub-millisecond. We're not building a search engine for millions of documents.
+- **Hybrid search** — SQLite FTS5 gives us BM25 full-text search alongside vector similarity. Both in one database, one query layer.
+- **Portable** — the entire memory database is one file. Copy it, back it up, inspect it with any SQLite client.
+
+**Override when:** You need multi-user concurrent writes at scale, or you're already running Postgres and want pgvector, or you need >100K documents with sub-10ms latency guarantees.
+
+### Why hybrid search (BM25 + vector) instead of vector-only?
+
+**Decision:** Combine FTS5 full-text search with vector cosine similarity, merge scores.
+
+**Why:**
+- **Vector search misses exact matches** — if the user asks "what did I say about ProjectX?" and memory contains the exact string "ProjectX", BM25 finds it instantly. Vector search might rank a semantically similar but wrong chunk higher.
+- **BM25 misses semantic similarity** — "automobile" and "car" are the same concept but different words. Vector search catches this.
+- **Combined is strictly better** — OpenClaw uses the same approach. The slight added complexity (~50 lines for score merging) is worth the quality improvement.
+
+**Override when:** Your memory is tiny (<100 chunks) and the added complexity isn't justified, or you need maximum simplicity for a prototype.
+
+### Why JSONL session files instead of a database?
+
+**Decision:** Use pi-mono's `SessionManager` which persists sessions as JSONL (JSON Lines) files.
+
+**Why:**
+- **It's what pi-mono provides** — this is the native session format. Fighting it would mean reimplementing session management.
+- **Human-readable** — you can `cat` a session file and read the conversation. Try that with a database blob.
+- **Git-friendly** — append-only format, easy to diff, easy to back up.
+- **One file per session** — no shared state, no locking issues for single-user access.
+
+**Override when:** You need to query across sessions (e.g., "find all conversations mentioning X"), or you need concurrent write access to the same session from multiple processes.
+
+### Why Express instead of Fastify / Hono / raw node:http?
+
+**Decision:** Use Express 5 for the HTTP API layer.
+
+**Why:**
+- **Familiar** — virtually every Node.js developer knows Express. Zero learning curve.
+- **Good enough** — we're not optimizing for 100K req/s. We're handling one user's chat messages. Express overhead is irrelevant.
+- **Middleware ecosystem** — if we need CORS, rate limiting, or request logging later, it's one `app.use()` call.
+
+**This is the least important decision in the entire project.** The HTTP layer is ~150 lines. Swapping Express for Hono or Fastify is a 30-minute refactor.
+
+**Override when:** You want zero dependencies (use `node:http`), or you need maximum performance (use Hono/Fastify), or you're already using a different framework in your app.
+
+### Why TypeScript instead of Python?
+
+**Decision:** TypeScript for the entire project.
+
+**Why:**
+- **pi-mono is TypeScript** — our core dependency. Same language, same toolchain, native imports.
+- **Type safety** — tool schemas use TypeBox, config has types, API contracts are typed. Catches bugs at compile time.
+- **Single runtime** — Node.js runs everything. No Python virtual environments, no dependency conflicts between pip and npm.
+
+**Override when:** Your team is Python-native and TypeScript is a barrier. In that case, you'd also need a Python agent SDK (e.g., Anthropic's agent SDK, LangChain, or PydanticAI) instead of pi-mono.
+
+### Why OpenAI text-embedding-3-small instead of other embedding models?
+
+**Decision:** Default to OpenAI `text-embedding-3-small` (1536 dimensions) for vector embeddings.
+
+**Why:**
+- **Cheap** — $0.02 per 1M tokens. Embedding an entire workspace costs fractions of a cent.
+- **Fast** — sub-second for typical batch sizes.
+- **Good quality** — consistently ranks well on MTEB benchmarks for its size class.
+- **Widely available** — OpenAI API is the most commonly available API key developers already have.
+
+**Override when:** You want to avoid OpenAI entirely (use Voyage, Gemini, or Mistral embeddings — all supported by OpenClaw's reference code), or you need multilingual-optimized embeddings.
+
 ## Architecture
 
 ```
@@ -360,6 +463,134 @@ agent-harness/
 | Auth profile rotation | One API key per provider |
 | Multi-model failover | Can be added later if needed |
 | Rate limiting / billing | Application layer handles this |
+
+## Testing Strategy
+
+**Principle:** Maximize unit tests, minimize integration tests. Tests should run fast, offline, and free.
+
+### Unit Tests (the bulk — no API calls, no network)
+
+- **Test runner:** [Vitest](https://vitest.dev/) (same as pi-mono and OpenClaw)
+- **Mock all external APIs** — embedding calls, LLM calls, TTS/STT API calls. Use Vitest's `vi.mock()`.
+- **Test each module in isolation:**
+  - Memory store: SQLite operations, chunking, FTS indexing (real SQLite, no mock — it's local)
+  - Memory search: score merging, BM25+vector hybrid logic (mock embeddings, real SQLite)
+  - Cron: job CRUD, schedule parsing, persistence (real JSON file, mock timers)
+  - Config: env var resolution, validation, defaults
+  - HTTP API: request/response handling (supertest or direct handler calls)
+  - System prompt builder: file loading, concatenation, template rendering
+  - Tool schemas: parameter validation, error cases
+
+### Integration Tests (optional, gated behind env flag)
+
+- **Triggered by:** `TEST_LIVE=true npm test`
+- **What they test:** Real API calls — embedding generation, LLM completion, TTS/STT
+- **Require:** Valid API keys in environment
+- **Purpose:** Verify our API wrappers work against real endpoints. Run manually before releases, not in CI.
+
+### Test Conventions
+
+- Co-locate tests: `memory/store.ts` → `memory/store.test.ts`
+- Name pattern: `*.test.ts`
+- No test should take >5 seconds (unit) or >30 seconds (integration)
+- No test should require network access unless gated behind `TEST_LIVE`
+
+## Error Handling & Resilience
+
+### LLM API Failures
+- **Timeout:** Configurable per-request timeout (default: 120s). Agent session handles retries internally (pi-mono built-in).
+- **Rate limiting:** Surface the error to the caller. Let the application layer decide retry strategy.
+- **Auth errors:** Fail fast with clear error message. Don't retry with bad credentials.
+
+### Embedding API Failures
+- **Graceful degradation:** If embeddings fail, memory search falls back to BM25-only (keyword search). Vector search is enhanced recall, not a hard dependency.
+- **Retry:** One automatic retry with exponential backoff for transient errors (429, 500, 503).
+
+### Session File Corruption
+- **Append-only JSONL** — inherently corruption-resistant. Partial writes only affect the last line.
+- **pi-mono's SessionManager** handles recovery — truncates incomplete trailing entries on load.
+
+### General Pattern
+- **Fail loud, fail clear** — structured error responses with actionable messages.
+- **No silent swallowing** — every caught error is logged.
+- **Caller decides** — the harness surfaces errors to the HTTP layer. The application decides what to show the user.
+
+## Concurrency
+
+### Single-user, single-session (default)
+The primary use case is one user per session. No concurrent writes to the same session file.
+
+### Multiple users (via user ID routing)
+Each user ID maps to a separate session file. No shared state between sessions. Concurrent requests for *different* users are safe — they touch different files.
+
+### Same user, concurrent requests
+If two requests arrive simultaneously for the same user:
+- **Option A (simple):** Reject the second request with 409 Conflict while the first is processing. The agent is stateful — interleaving messages mid-turn produces unpredictable results.
+- **Option B (queue):** Queue the second message and process it after the first completes. pi-mono's `AgentSession` supports message queuing natively.
+
+**Default:** Option A for v1. Simple, predictable, correct.
+
+## Custom Tool Extensibility
+
+Developers add tools by implementing the `AgentTool` interface from pi-agent-core:
+
+```typescript
+// my-tools/weather.ts
+import { Type, type Static } from "@sinclair/typebox";
+import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
+
+const WeatherSchema = Type.Object({
+  city: Type.String({ description: "City name" }),
+});
+
+export const weatherTool: AgentTool<typeof WeatherSchema> = {
+  name: "weather",
+  description: "Get current weather for a city",
+  schema: WeatherSchema,
+  async execute(params: Static<typeof WeatherSchema>): Promise<AgentToolResult> {
+    const data = await fetch(`https://wttr.in/${params.city}?format=j1`).then(r => r.json());
+    return { resultForAssistant: JSON.stringify(data.current_condition[0]) };
+  },
+};
+```
+
+Register in config or pass to the harness at startup:
+
+```typescript
+import { weatherTool } from "./my-tools/weather.js";
+
+const harness = createHarness({
+  customTools: [weatherTool],
+});
+```
+
+**Convention:** Place custom tools in a `tools/` directory. Each file exports one or more `AgentTool` objects.
+
+## Deployment
+
+### Development
+```bash
+npm install
+cp config.example.json config.json  # edit with your API keys
+npm run dev                          # ts-node or tsx with watch mode
+```
+
+### Production
+```bash
+npm run build                        # tsc → dist/
+node dist/index.js                   # or: npm start
+```
+
+**No Docker required** for single-instance deployment. It's a Node.js process — run it however you run Node.js apps (systemd, PM2, Docker, Kubernetes, etc.).
+
+**Environment variables** for secrets — never commit API keys:
+```bash
+export ANTHROPIC_API_KEY=sk-...
+export OPENAI_API_KEY=sk-...
+export ELEVENLABS_API_KEY=...
+export AGENT_API_TOKEN=your-bearer-token
+node dist/index.js
+```
 
 ## Security Considerations
 
