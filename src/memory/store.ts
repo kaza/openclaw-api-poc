@@ -97,9 +97,10 @@ export class MemoryStore {
     const deleteVec = this.db.prepare("DELETE FROM chunks_vec WHERE rowid = ?");
 
     for (const { id } of ids) {
+      const rowId = BigInt(id);
       deleteChunk.run(id);
-      deleteFts.run(id);
-      deleteVec.run(id);
+      deleteFts.run(rowId);
+      deleteVec.run(rowId);
     }
   }
 
@@ -112,10 +113,11 @@ export class MemoryStore {
       .run(source, content, metadata ? JSON.stringify(metadata) : null, now, now);
 
     const id = Number(inserted.lastInsertRowid);
-    this.db.prepare("INSERT INTO chunks_fts (rowid, content, source) VALUES (?, ?, ?)").run(id, content, source);
+    const rowId = BigInt(id);
+    this.db.prepare("INSERT INTO chunks_fts (rowid, content, source) VALUES (?, ?, ?)").run(rowId, content, source);
     this.db
       .prepare("INSERT INTO chunks_vec (rowid, embedding) VALUES (?, vec_f32(?))")
-      .run(id, JSON.stringify(embedding));
+      .run(rowId, JSON.stringify(embedding));
 
     return id;
   }
@@ -125,16 +127,26 @@ export class MemoryStore {
   }
 
   vectorSearch(queryEmbedding: number[], limit: number): VectorHit[] {
-    return this.db
+    const rows = this.db
       .prepare("SELECT rowid as id, distance FROM chunks_vec WHERE embedding MATCH vec_f32(?) AND k = ?")
-      .all(JSON.stringify(queryEmbedding), limit) as unknown as VectorHit[];
+      .all(JSON.stringify(queryEmbedding), limit) as unknown as Array<{ id: number | bigint; distance: number }>;
+
+    return rows.map((row) => ({
+      id: Number(row.id),
+      distance: row.distance,
+    }));
   }
 
   bm25Search(query: string, limit: number): Bm25Hit[] {
     try {
-      return this.db
+      const rows = this.db
         .prepare("SELECT rowid as id, bm25(chunks_fts) as bm25 FROM chunks_fts WHERE chunks_fts MATCH ? ORDER BY bm25 LIMIT ?")
-        .all(query, limit) as unknown as Bm25Hit[];
+        .all(query, limit) as unknown as Array<{ id: number | bigint; bm25: number }>;
+
+      return rows.map((row) => ({
+        id: Number(row.id),
+        bm25: row.bm25,
+      }));
     } catch {
       return [];
     }
