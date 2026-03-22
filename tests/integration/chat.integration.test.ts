@@ -6,7 +6,8 @@ import { describe, expect, it } from "vitest";
 const INTEGRATION_ENABLED = process.env.TEST_INTEGRATION === "true";
 const BASE_URL = process.env.TEST_BASE_URL ?? "http://localhost:3000";
 const VALID_TOKEN = process.env.TEST_BEARER_TOKEN ?? process.env.AGENT_API_TOKEN ?? "";
-const TIMEOUT_MS = Number(process.env.TEST_INTEGRATION_TIMEOUT_MS ?? 180000);
+const DEFAULT_TIMEOUT_MS = process.env.HARNESS_TEST_MODE === "true" ? 15000 : 180000;
+const TIMEOUT_MS = Number(process.env.TEST_INTEGRATION_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS);
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const AUDIO_FIXTURE = path.join(TEST_DIR, "fixtures", "sample.ogg");
 

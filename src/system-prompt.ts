@@ -20,6 +20,7 @@ export async function buildSystemPrompt(workspaceDir: string): Promise<string> {
     "You are running inside a lightweight enterprise agent harness.",
     "Use tools when they materially improve output quality.",
     "When citing retrieved memory, include source attribution.",
+    "Always respond in the same language the user used in their message.",
   ];
 
   for (const file of files) {

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import request from "supertest";
@@ -164,6 +164,60 @@ describe("createApp", () => {
 
     const failed = await request(app).post("/chat").send({ userId: "u", message: "x" }).expect(400);
     expect(failed.body.error).toBe("chat-failed");
+  });
+
+  it("loads recent paired history from per-user session files", async () => {
+    const sessions = await makeSessionsDir();
+    const uiDir = await makeUiDir();
+    const sessionDir = path.join(sessions, "user-1", "session");
+    await mkdir(sessionDir, { recursive: true });
+
+    await writeFile(
+      path.join(sessionDir, "2026-03-22.jsonl"),
+      [
+        JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "leading orphan assistant" }] } }),
+        JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: "first question" }] } }),
+        JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "first answer" }] } }),
+        JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: "second question" }] } }),
+        JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "second answer" }] } }),
+      ].join("\n"),
+      "utf8",
+    );
+
+    const harness = {
+      prompt: vi.fn(),
+      promptStream: vi.fn(),
+    };
+
+    const app = createApp({ sessions, uiDir, server: { token: "secret" } }, harness as never);
+
+    const response = await request(app)
+      .get("/history")
+      .set("authorization", "Bearer secret")
+      .query({ userId: "user-1", limit: "2" })
+      .expect(200);
+
+    expect(response.body).toEqual({
+      messages: [
+        { role: "user", text: "second question" },
+        { role: "assistant", text: "second answer" },
+      ],
+    });
+  });
+
+  it("returns JSON validation errors from /chat/stream before SSE starts", async () => {
+    const sessions = await makeSessionsDir();
+    const uiDir = await makeUiDir();
+    const harness = {
+      prompt: vi.fn(),
+      promptStream: vi.fn(),
+    };
+
+    const app = createApp({ sessions, uiDir, server: {} }, harness as never);
+
+    const response = await request(app).post("/chat/stream").send({ userId: "u" }).expect(400);
+    expect(response.body.error).toBe("Provide message text or an audio upload");
+    expect(harness.promptStream).not.toHaveBeenCalled();
   });
 
   it("streams deltas/done events and streams error events when already in SSE mode", async () => {

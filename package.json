@@ -6,11 +6,12 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "tsx src/index.ts",
-    "start": "node dist/index.js",
+    "dev": "tsx --env-file=.env src/index.ts",
+    "start": "node --env-file=.env dist/index.js",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:integration": "TEST_INTEGRATION=true vitest run tests/integration"
+    "test:integration": "TEST_INTEGRATION=true vitest run tests/integration",
+    "test:integration:fast": "HARNESS_TEST_MODE=true TEST_INTEGRATION=true vitest run tests/integration"
   },
   "repository": {
     "type": "git",

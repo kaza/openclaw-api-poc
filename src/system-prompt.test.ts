@@ -24,6 +24,7 @@ describe("buildSystemPrompt", () => {
     const prompt = await buildSystemPrompt(workspace);
 
     expect(prompt).toContain("You are running inside a lightweight enterprise agent harness.");
+    expect(prompt).toContain("Always respond in the same language the user used in their message.");
     expect(prompt).toContain("## AGENTS.md\nagents body");
     expect(prompt).toContain("## TOOLS.md\ntools body");
     expect(prompt).toContain("## MEMORY.md\nmemory body");
